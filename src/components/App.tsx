@@ -11,7 +11,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Client, Session } from "@glyphh/client";
-import { staticTokenProvider, isWireEvent } from "@glyphh/client";
+import { isWireEvent } from "@glyphh/client";
+import { ensureLocalRuntime } from "@glyphh/client/runtime";
 import { Header } from "./Header.js";
 import { Message } from "./Message.js";
 import { InputBar } from "./InputBar.js";
@@ -105,9 +106,11 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
 
   const ensureSession = useCallback(async (): Promise<Session> => {
     if (sessionRef.current) return sessionRef.current;
-    const { session, runtimeToken } = await client.sessions.create({ rotor });
-    if (!session.runtimeUrl) throw new Error("runtime is not ready");
-    const s = client.session({ url: session.runtimeUrl, token: staticTokenProvider(runtimeToken), rotor });
+    // The desktop/CLI talks to the ONE local runtime per machine — started
+    // transparently on first use, shared with any other local client. (Remote
+    // provisioning via client.sessions.create is a separate, control-plane path.)
+    const rt = await ensureLocalRuntime();
+    const s = client.session({ url: rt.url, rotor });
     sessionRef.current = s;
     return s;
   }, [client, rotor]);
