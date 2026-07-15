@@ -180,6 +180,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         setRotor,
         clearChat: () => setMessages([]),
         quit: () => exit(),
+        emit: (lines) => patch(id, (m) => ({ ...m, result: lines })),
       };
       const result = await runSlash(ctx, line);
       patch(id, (m) => ({ ...m, result }));

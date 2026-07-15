@@ -20,6 +20,8 @@ export interface CommandCtx {
   setRotor: (r: string) => void;
   clearChat: () => void;
   quit: () => void;
+  /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
+  emit: (lines: string[]) => void;
 }
 
 export interface SlashCommand {
@@ -38,20 +40,17 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "login",
     aliases: ["auth", "signin"],
-    summary: "sign in with an email magic link",
-    usage: "/login <email>",
-    async run(ctx, args) {
-      const email = args[0];
-      if (!email) return ["usage: /login <email>"];
-      const start = await ctx.client.auth.startEmailLink(email);
-      // Dev servers return the token directly — finish the round-trip inline.
-      if (start.devToken) {
-        await ctx.client.auth.verifyEmailLink(start.devToken);
-        const account = await loadAccount(ctx.client);
-        ctx.setAccount(account);
-        return ["Login successful", account ? `signed in as ${account.email}` : ""];
-      }
-      return [`Magic link sent to ${email}`, "open it to finish signing in, then /status"];
+    summary: "sign in from this terminal (approve in a browser)",
+    async run(ctx) {
+      // Device authorization grant: show a code + URL, then poll until approved.
+      ctx.emit(["starting device login…"]);
+      await ctx.client.auth.deviceLogin({
+        onPrompt: (p) =>
+          ctx.emit([`open  ${p.verificationUri}`, `enter code  ${p.userCode}`, "waiting for approval…"]),
+      });
+      const account = await loadAccount(ctx.client);
+      ctx.setAccount(account);
+      return ["Login successful", account ? `signed in as ${account.email}` : ""];
     },
   },
   {
