@@ -44,26 +44,36 @@ function planLabel(tier: string): string {
 
 function LeftPanel({ account, cwd }: { account: Account | null; cwd: string }): React.ReactElement {
   return (
-    <Box flexDirection="column" flexGrow={1} alignItems="center" paddingX={1}>
+    <Box flexDirection="column" width="25%" flexShrink={0} alignItems="center" paddingX={1}>
       <Text color={theme.white}>{CAT_ROWS.join("\n")}</Text>
       <Box flexDirection="column" alignItems="center" marginTop={1}>
         {account ? (
           <>
-            <Text color={theme.white} bold>
+            <Text color={theme.white} bold wrap="truncate-end">
               {account.name ?? account.email}
             </Text>
-            <Text color={theme.gray}>
+            <Text color={theme.gray} wrap="truncate-end">
               <Text color={theme.purple}>{planLabel(account.tier)}</Text>
-              {account.credits !== null ? ` plan · ${account.credits} credits` : " plan"}
+              {account.credits !== null ? ` · ${account.credits} credits` : ""}
             </Text>
-            <Text color={theme.gray}>{account.email}'s Organization</Text>
-            <Text color={theme.dim}>{cwd}</Text>
+            <Text color={theme.gray} wrap="truncate-end">
+              {account.email}
+            </Text>
+            <Text color={theme.dim} wrap="truncate-start">
+              {cwd}
+            </Text>
           </>
         ) : (
           <>
-            <Text color={theme.gray}>not signed in</Text>
-            <Text color={theme.dim}>run /login &lt;email&gt; to sign in</Text>
-            <Text color={theme.dim}>{cwd}</Text>
+            <Text color={theme.gray} wrap="truncate-end">
+              not signed in
+            </Text>
+            <Text color={theme.dim} wrap="truncate-end">
+              /login to sign in
+            </Text>
+            <Text color={theme.dim} wrap="truncate-start">
+              {cwd}
+            </Text>
           </>
         )}
       </Box>
@@ -75,7 +85,7 @@ function NotesPanel({ notes }: { notes: string[] }): React.ReactElement {
   return (
     <Box
       flexDirection="column"
-      width={40}
+      flexGrow={1}
       borderStyle="single"
       borderTop={false}
       borderBottom={false}

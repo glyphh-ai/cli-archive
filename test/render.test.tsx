@@ -21,8 +21,9 @@ const notes = ["Full-screen chat TUI", "Slash commands: /login /status"];
 
 describe("TUI layout", () => {
   it("header: version in the outline, cat, stacked account, and What's new panel", () => {
+    // 120 cols → the 1/4 left panel (~30) fits the account lines without truncation.
     const { lastFrame } = render(
-      <Header width={90} version="v1.0.0" account={account} notes={notes} server="https://api.glyphh.ai" cwd="~/development/yo" />,
+      <Header width={120} version="v1.0.0" account={account} notes={notes} server="https://api.glyphh.ai" cwd="~/development/yo" />,
     );
     const frame = lastFrame()!;
     expect(frame).toContain("Glyphh v1.0.0"); // version in the border
@@ -31,7 +32,6 @@ describe("TUI layout", () => {
     expect(frame).toContain("Chris");
     expect(frame).toContain("Pro"); // plan, title-cased
     expect(frame).toContain("812 credits");
-    expect(frame).toContain("Organization"); // "<email>'s Organization"
     expect(frame).toContain("~/development/yo"); // cwd under the account
     expect(frame).toContain("What's new"); // right panel header
     expect(frame).toContain("Full-screen chat TUI"); // a release note

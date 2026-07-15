@@ -2,9 +2,10 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * main.tsx — the `glyphh-tui` entry. Renders INLINE (no alternate screen) so the header
- * and finished turns flow into the terminal's native scrollback while the composer stays
- * pinned at the bottom. All app capability comes from the SDK client built in glyphh.ts.
+ * main.tsx — the `glyphh-tui` entry. Takes over the FULL screen (alternate screen +
+ * hidden cursor), renders the fixed-height chat, and restores the terminal cleanly on
+ * exit (Ctrl+C / SIGTERM / crash). All app capability comes from the SDK client in
+ * glyphh.ts.
  */
 
 import { homedir } from "node:os";
@@ -22,15 +23,35 @@ function displayCwd(): string {
   return cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
 }
 
+function enterFullScreen(): void {
+  process.stdout.write("\x1b[?1049h\x1b[?25l"); // alt screen + hide cursor
+}
+function leaveFullScreen(): void {
+  process.stdout.write("\x1b[?25h\x1b[?1049l"); // show cursor + restore screen
+}
+
 function main(): void {
   const client = makeClient();
+  enterFullScreen();
+  let restored = false;
+  const restore = () => {
+    if (!restored) {
+      restored = true;
+      leaveFullScreen();
+    }
+  };
+  process.on("exit", restore);
+
   const { waitUntilExit } = render(
     <App client={client} version={VERSION} server={SERVER_URL} cwd={displayCwd()} rotor={ROTOR} />,
   );
-  waitUntilExit().catch((e) => {
-    process.stderr.write(`glyphh-tui: ${(e as Error).message}\n`);
-    process.exit(1);
-  });
+  waitUntilExit()
+    .then(restore)
+    .catch((e) => {
+      restore();
+      process.stderr.write(`glyphh-tui: ${(e as Error).message}\n`);
+      process.exit(1);
+    });
 }
 
 main();
