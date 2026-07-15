@@ -1,24 +1,24 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * App.tsx — the TUI root. Owns the transcript, the composer buffer, and the live turn.
- * Header (cat + account) / Chat (streaming transcript) / InputBar (composer + Send) /
- * Footer (permission mode + rotor). Every turn goes through the SDK: provision a rotor
- * session once, then stream `session.turn()` events into the assistant message, closing
- * with a duration + credits meta line.
+ * App.tsx — the TUI root. The header + every finished turn flow into the terminal's
+ * native scrollback via <Static> (printed once, never re-rendered — so a long transcript
+ * never overlaps itself); only the in-flight answer, the composer, and the footer stay
+ * dynamic at the bottom. A leading `/` runs a slash command; plain text runs a rotor turn,
+ * streaming `session.turn()` events into the live answer and closing with a meta line.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, useInput, useStdout } from "ink";
-import type { Client } from "@glyphh/client";
-import { staticTokenProvider } from "@glyphh/client";
-import type { Session } from "@glyphh/client";
+import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
+import type { Client, Session } from "@glyphh/client";
+import { staticTokenProvider, isWireEvent } from "@glyphh/client";
 import { Header } from "./Header.js";
-import { Chat } from "./Chat.js";
+import { Message } from "./Message.js";
 import { InputBar } from "./InputBar.js";
 import { Footer } from "./Footer.js";
+import { theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
-import { isWireEvent } from "@glyphh/client";
+import { runSlash, RELEASE_NOTES, type CommandCtx } from "../commands.js";
 import type { ChatMessage, PermissionMode, TurnMeta } from "../types.js";
 
 const MODES: PermissionMode[] = ["ask", "auto", "plan", "read-only"];
@@ -27,53 +27,57 @@ export interface AppProps {
   client: Client;
   version: string;
   server: string;
-  release: string;
+  cwd: string;
   rotor: string;
 }
 
-/** Monotonic id source that doesn't touch Date.now/Math.random (kept deterministic-friendly). */
+/** A scrollback item: the one-time header, or a committed message. */
+type StaticItem = { key: "header" } | { key: string; msg: ChatMessage };
+
 function useIds(): () => string {
   const n = useRef(0);
   return useCallback(() => `m${++n.current}`, []);
 }
 
-export function App({ client, version, server, release, rotor }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, rotor: initialRotor }: AppProps): React.ReactElement {
+  const { exit } = useApp();
   const { stdout } = useStdout();
   const nextId = useIds();
 
   const [cols, setCols] = useState(stdout.columns || 80);
-  const [rows, setRows] = useState(stdout.rows || 24);
+  const [ready, setReady] = useState(false); // account resolved → safe to print the header
   const [account, setAccount] = useState<Account | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [log, setLog] = useState<ChatMessage[]>([]); // committed, append-only (scrollback)
+  const [live, setLive] = useState<ChatMessage | null>(null); // the streaming answer
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<PermissionMode>("ask");
+  const [rotor, setRotorState] = useState(initialRotor);
 
   const sessionRef = useRef<Session | null>(null);
 
-  // Track the terminal size so the layout fills the screen and reflows on resize.
   useEffect(() => {
-    const onResize = () => {
-      setCols(stdout.columns || 80);
-      setRows(stdout.rows || 24);
-    };
+    const onResize = () => setCols(stdout.columns || 80);
     stdout.on("resize", onResize);
     return () => {
       stdout.off("resize", onResize);
     };
   }, [stdout]);
 
-  // Who's signed in (for the header).
   useEffect(() => {
-    void loadAccount(client).then(setAccount);
+    void loadAccount(client).then((a) => {
+      setAccount(a);
+      setReady(true);
+    });
   }, [client]);
 
-  const pushSystem = useCallback(
-    (text: string) => setMessages((m) => [...m, { id: nextId(), role: "system", text }]),
-    [nextId],
-  );
+  const commit = useCallback((m: ChatMessage) => setLog((l) => [...l, m]), []);
 
-  /** Lazily provision one rotor session for the whole conversation. */
+  const setRotor = useCallback((r: string) => {
+    sessionRef.current = null; // re-provision on the next turn
+    setRotorState(r);
+  }, []);
+
   const ensureSession = useCallback(async (): Promise<Session> => {
     if (sessionRef.current) return sessionRef.current;
     const { session, runtimeToken } = await client.sessions.create({ rotor });
@@ -83,24 +87,19 @@ export function App({ client, version, server, release, rotor }: AppProps): Reac
     return s;
   }, [client, rotor]);
 
-  const patch = useCallback(
-    (id: string, fn: (m: ChatMessage) => ChatMessage) =>
-      setMessages((list) => list.map((m) => (m.id === id ? fn(m) : m))),
-    [],
-  );
-
   const runTurn = useCallback(
     async (prompt: string) => {
+      commit({ id: nextId(), role: "user", text: prompt });
       const answerId = nextId();
       const startedAt = Date.now();
       const creditsBefore = account?.credits ?? null;
-      const meta: TurnMeta = { status: "running", credits: null, durationMs: null };
-      setMessages((m) => [
-        ...m,
-        { id: nextId(), role: "user", text: prompt },
-        { id: answerId, role: "assistant", text: "", streaming: true, meta },
-      ]);
+      let msg: ChatMessage = { id: answerId, role: "assistant", text: "", streaming: true, meta: { status: "running", credits: null, durationMs: null } };
+      setLive(msg);
       setBusy(true);
+      const update = (fn: (m: ChatMessage) => ChatMessage) => {
+        msg = fn(msg);
+        setLive(msg);
+      };
       try {
         const session = await ensureSession();
         const run = session.turn(prompt);
@@ -109,17 +108,16 @@ export function App({ client, version, server, release, rotor }: AppProps): Reac
           if (!isWireEvent(ev)) continue;
           if (ev.kind === "step" && ev.frames.length) {
             buffer += ev.frames.join("");
-            patch(answerId, (m) => ({ ...m, text: buffer }));
+            update((m) => ({ ...m, text: buffer }));
           } else if (ev.kind === "answer") {
             buffer = ev.text;
-            patch(answerId, (m) => ({ ...m, text: buffer }));
+            update((m) => ({ ...m, text: buffer }));
           } else if (ev.kind === "error") {
-            patch(answerId, (m) => ({ ...m, text: m.text || ev.detail }));
+            update((m) => ({ ...m, text: m.text || ev.detail }));
           }
         }
         const result = await run.done;
         const durationMs = Date.now() - startedAt;
-        // Credits: re-read the balance and diff (usage is metered server-side).
         let credits: number | null = null;
         try {
           const bal = await client.billing.balance();
@@ -128,59 +126,95 @@ export function App({ client, version, server, release, rotor }: AppProps): Reac
         } catch {
           /* balance best-effort */
         }
-        const status = result.status === "error" || result.error ? "error" : "done";
-        patch(answerId, (m) => ({ ...m, streaming: false, meta: { status, credits, durationMs } }));
+        const status: TurnMeta["status"] = result.status === "error" || result.error ? "error" : "done";
+        update((m) => ({ ...m, streaming: false, meta: { status, credits, durationMs } }));
       } catch (err) {
         const durationMs = Date.now() - startedAt;
-        patch(answerId, (m) => ({
+        update((m) => ({
           ...m,
           streaming: false,
           text: m.text || `couldn't reach the runtime: ${(err as Error).message}`,
           meta: { status: "error", credits: null, durationMs },
         }));
       } finally {
+        commit(msg); // move the finished answer into scrollback
+        setLive(null);
         setBusy(false);
       }
     },
-    [account, client, ensureSession, nextId, patch],
+    [account, client, commit, ensureSession, nextId],
+  );
+
+  const runCommand = useCallback(
+    async (line: string) => {
+      const ctx: CommandCtx = {
+        client,
+        account,
+        rotor,
+        version,
+        server,
+        setAccount,
+        setRotor,
+        clearChat: () => setLog([]),
+        quit: () => exit(),
+      };
+      const result = await runSlash(ctx, line);
+      commit({ id: nextId(), role: "command", text: line, result });
+    },
+    [account, client, commit, exit, nextId, rotor, server, setRotor, version],
   );
 
   const submit = useCallback(() => {
-    const prompt = input.trim();
-    if (!prompt || busy) return;
+    const raw = input.trim();
+    if (!raw || busy) return;
     setInput("");
-    if (!account) {
-      pushSystem("You're not signed in. Run `glyphh auth` in another shell, then restart.");
+    if (raw.startsWith("/")) {
+      void runCommand(raw);
       return;
     }
-    void runTurn(prompt);
-  }, [account, busy, input, pushSystem, runTurn]);
+    if (!account) {
+      commit({ id: nextId(), role: "user", text: raw, result: ["Not logged in · Please run /login"] });
+      return;
+    }
+    void runTurn(raw);
+  }, [account, busy, commit, input, nextId, runCommand, runTurn]);
 
   useInput((ch, key) => {
     if (key.tab && key.shift) {
       setMode((m) => MODES[(MODES.indexOf(m) + 1) % MODES.length]!);
       return;
     }
-    if (key.return) {
-      submit();
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setInput((v) => v.slice(0, -1));
-      return;
-    }
-    // Printable input only — ignore control chars and escape sequences.
+    if (key.return) return submit();
+    if (key.backspace || key.delete) return setInput((v) => v.slice(0, -1));
     if (ch && !key.ctrl && !key.meta && !key.escape) setInput((v) => v + ch);
   });
 
-  // Height budget: header is the cat (9) + 2 borders + 1 title ≈ 12; input 3; footer 1.
-  const headerH = 12;
-  const chatH = Math.max(3, rows - headerH - 3 - 1);
+  const items: StaticItem[] = ready ? [{ key: "header" }, ...log.map((m) => ({ key: m.id, msg: m }))] : [];
 
   return (
-    <Box flexDirection="column" width={cols} height={rows}>
-      <Header width={cols} version={version} account={account} release={release} server={server} />
-      <Chat messages={messages} height={chatH} />
+    <Box flexDirection="column" width={cols}>
+      <Static items={items}>
+        {(item) =>
+          "msg" in item ? (
+            <Box key={item.key} paddingX={1}>
+              <Message message={item.msg} />
+            </Box>
+          ) : (
+            <Header key="header" width={cols} version={version} account={account} notes={RELEASE_NOTES} server={server} cwd={cwd} />
+          )
+        }
+      </Static>
+
+      {live ? (
+        <Box paddingX={1}>
+          <Message message={live} />
+        </Box>
+      ) : log.length === 0 && ready ? (
+        <Box paddingX={1}>
+          <Text color={theme.dim}>Ask Glyphh anything, or type /help. Ctrl+C to quit.</Text>
+        </Box>
+      ) : null}
+
       <InputBar width={cols} value={input} busy={busy} />
       <Footer width={cols} permissionMode={mode} rotor={rotor} />
     </Box>

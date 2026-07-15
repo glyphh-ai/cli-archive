@@ -2,45 +2,35 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * main.tsx — the `glyphh-tui` entry. Enters the alternate screen, hides the cursor,
- * renders the full-screen chat, and restores the terminal cleanly on exit (including
- * Ctrl+C / SIGTERM). All app capability comes from the SDK client built in glyphh.ts.
+ * main.tsx — the `glyphh-tui` entry. Renders INLINE (no alternate screen) so the header
+ * and finished turns flow into the terminal's native scrollback while the composer stays
+ * pinned at the bottom. All app capability comes from the SDK client built in glyphh.ts.
  */
 
+import { homedir } from "node:os";
 import { render } from "ink";
 import { App } from "./components/App.js";
 import { makeClient, SERVER_URL } from "./glyphh.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
-const RELEASE = "v1.0.0 — chat TUI";
 const ROTOR = process.env.GLYPHH_ROTOR ?? "default";
 
-function enterAltScreen(): void {
-  process.stdout.write("\x1b[?1049h\x1b[?25l"); // alt screen + hide cursor
-}
-function leaveAltScreen(): void {
-  process.stdout.write("\x1b[?25h\x1b[?1049l"); // show cursor + restore screen
+/** The working directory, with $HOME collapsed to `~`. */
+function displayCwd(): string {
+  const cwd = process.cwd();
+  const home = homedir();
+  return cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
 }
 
 function main(): void {
   const client = makeClient();
-  enterAltScreen();
-
   const { waitUntilExit } = render(
-    <App client={client} version={VERSION} server={SERVER_URL} release={RELEASE} rotor={ROTOR} />,
-    { exitOnCtrlC: true },
+    <App client={client} version={VERSION} server={SERVER_URL} cwd={displayCwd()} rotor={ROTOR} />,
   );
-
-  const restore = () => leaveAltScreen();
-  process.on("exit", restore);
-
-  waitUntilExit()
-    .then(restore)
-    .catch((e) => {
-      restore();
-      process.stderr.write(`glyphh-tui: ${(e as Error).message}\n`);
-      process.exit(1);
-    });
+  waitUntilExit().catch((e) => {
+    process.stderr.write(`glyphh-tui: ${(e as Error).message}\n`);
+    process.exit(1);
+  });
 }
 
 main();

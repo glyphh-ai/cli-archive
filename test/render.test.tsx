@@ -12,26 +12,29 @@ import { render } from "ink-testing-library";
 import { Header } from "../src/components/Header.js";
 import { InputBar } from "../src/components/InputBar.js";
 import { Footer } from "../src/components/Footer.js";
-import { Chat } from "../src/components/Chat.js";
+import { Message } from "../src/components/Message.js";
 import { CAT_ROWS } from "../src/banner.js";
 import type { ChatMessage } from "../src/types.js";
 
 const account = { email: "chris@glyphh.ai", name: "Chris", tier: "pro", credits: 812 };
+const notes = ["Full-screen chat TUI", "Slash commands: /login /status"];
 
 describe("TUI layout", () => {
-  it("header carries the version in the outline + the cat + account + release", () => {
+  it("header: version in the outline, cat, stacked account, and What's new panel", () => {
     const { lastFrame } = render(
-      <Header width={80} version="v1.0.0" account={account} release="v1.0.0 — chat TUI" server="https://api.glyphh.ai" />,
+      <Header width={90} version="v1.0.0" account={account} notes={notes} server="https://api.glyphh.ai" cwd="~/development/yo" />,
     );
     const frame = lastFrame()!;
     expect(frame).toContain("Glyphh v1.0.0"); // version in the border
     expect(frame).toContain("┌─"); // the hand-drawn outline
-    expect(frame).toContain(CAT_ROWS[0]!.trim().slice(0, 2)); // some cat braille rendered
+    expect(frame).toContain(CAT_ROWS[1]!.trim().slice(0, 2)); // some cat braille rendered
     expect(frame).toContain("Chris");
     expect(frame).toContain("Pro"); // plan, title-cased
     expect(frame).toContain("812 credits");
-    expect(frame).toContain("chat TUI"); // release note
-    expect(frame).toContain("api.glyphh.ai");
+    expect(frame).toContain("Organization"); // "<email>'s Organization"
+    expect(frame).toContain("~/development/yo"); // cwd under the account
+    expect(frame).toContain("What's new"); // right panel header
+    expect(frame).toContain("Full-screen chat TUI"); // a release note
   });
 
   it("input bar shows the typed text and a Send button", () => {
@@ -50,27 +53,26 @@ describe("TUI layout", () => {
     expect(frame).toContain("glyphh-coder");
   });
 
-  it("chat renders the streaming meta (duration + credits)", () => {
-    const messages: ChatMessage[] = [
-      { id: "1", role: "user", text: "hi" },
-      {
-        id: "2",
-        role: "assistant",
-        text: "hello!",
-        meta: { status: "done", credits: 3, durationMs: 2300 },
-      },
-    ];
-    const { lastFrame } = render(<Chat messages={messages} height={12} />);
-    const frame = lastFrame()!;
-    expect(frame).toContain("you");
-    expect(frame).toContain("glyphh");
-    expect(frame).toContain("hello!");
-    expect(frame).toContain("2.3s");
+  it("message: user input bar, answer bullet, and the duration + credits meta", () => {
+    const user: ChatMessage = { id: "1", role: "user", text: "hi" };
+    const answer: ChatMessage = { id: "2", role: "assistant", text: "hello!", meta: { status: "done", credits: 3, durationMs: 2300 } };
+    expect(render(<Message message={user} />).lastFrame()!).toContain("▌ hi");
+    const frame = render(<Message message={answer} />).lastFrame()!;
+    expect(frame).toContain("● hello!"); // assistant bullet
+    expect(frame).toContain("2.3s"); // duration
     expect(frame).toContain("3 credits");
   });
 
-  it("chat shows an empty-state hint", () => {
-    const { lastFrame } = render(<Chat messages={[]} height={12} />);
-    expect(lastFrame()!).toContain("Ask Glyphh anything.");
+  it("message: a slash command shows its └ result", () => {
+    const cmd: ChatMessage = {
+      id: "1",
+      role: "command",
+      text: "/login chris@glyphh.ai",
+      result: ["Login successful", "signed in as chris@glyphh.ai"],
+    };
+    const frame = render(<Message message={cmd} />).lastFrame()!;
+    expect(frame).toContain("/login chris@glyphh.ai");
+    expect(frame).toContain("└ Login successful");
+    expect(frame).toContain("signed in as chris@glyphh.ai");
   });
 });

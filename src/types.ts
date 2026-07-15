@@ -5,7 +5,7 @@
  * accrues text as the run streams and carries per-turn meta (credits + duration).
  */
 
-export type Role = "user" | "assistant" | "system";
+export type Role = "user" | "assistant" | "system" | "command";
 
 export type TurnStatus = "running" | "done" | "error";
 
@@ -25,6 +25,8 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Assistant-only: per-turn meta. */
   meta?: TurnMeta;
+  /** A `└ …` continuation under a user/command line (a status or command output). */
+  result?: string[];
 }
 
 export type PermissionMode = "ask" | "auto" | "plan" | "read-only";
