@@ -25,7 +25,7 @@ function glyphhHome(): string {
 }
 
 /** Server URL: env override, else the CLI profile, else the public control plane. */
-function serverUrl(): string {
+export function serverUrl(): string {
   if (process.env.GLYPHH_SERVER_URL) return process.env.GLYPHH_SERVER_URL;
   try {
     const cfg = JSON.parse(readFileSync(join(glyphhHome(), "config.json"), "utf8")) as { server?: string };
@@ -60,8 +60,5 @@ export async function loadAccount(client: Client): Promise<Account | null> {
   }
   return { email: identity.email, name: identity.name, tier: identity.tier, credits };
 }
-
-/** Where to reach the CLI's server, exposed for the header/status line. */
-export const SERVER_URL = serverUrl();
 
 export { staticTokenProvider };

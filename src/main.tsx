@@ -8,10 +8,11 @@
  * glyphh.ts.
  */
 
+import "./env.js"; // MUST be first — loads .env before anything reads the environment
 import { homedir } from "node:os";
 import { render } from "ink";
 import { App } from "./components/App.js";
-import { makeClient, SERVER_URL } from "./glyphh.js";
+import { makeClient, serverUrl } from "./glyphh.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
 const ROTOR = process.env.GLYPHH_ROTOR ?? "default";
@@ -43,7 +44,7 @@ function main(): void {
   process.on("exit", restore);
 
   const { waitUntilExit } = render(
-    <App client={client} version={VERSION} server={SERVER_URL} cwd={displayCwd()} rotor={ROTOR} />,
+    <App client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} rotor={ROTOR} />,
   );
   waitUntilExit()
     .then(restore)
