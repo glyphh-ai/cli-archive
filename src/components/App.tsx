@@ -218,6 +218,8 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         quit: () => exit(),
         emit: (lines) => patch(id, (m) => ({ ...m, result: lines })),
         refreshConfig: () => setConfigVersion((v) => v + 1),
+        sessionId: sessionId.current,
+        invalidateModels: () => { modelsForRotor.current = null; },
       };
       const result = await runSlash(ctx, line);
       patch(id, (m) => ({ ...m, result }));

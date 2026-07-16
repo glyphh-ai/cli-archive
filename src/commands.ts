@@ -9,6 +9,7 @@
 
 import type { Client } from "@glyphh/client";
 import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
+import { switchModel } from "@glyphh/client/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
 
 export interface CommandCtx {
@@ -25,6 +26,10 @@ export interface CommandCtx {
   emit: (lines: string[]) => void;
   /** Reload the footer's model/config status (after a binding change). */
   refreshConfig?: () => void;
+  /** The per-process session id — anchors a mid-session model switch's overrides + audit. */
+  sessionId: string;
+  /** Drop the cached model registry so the next turn re-resolves (after a session switch). */
+  invalidateModels?: () => void;
 }
 
 export interface SlashCommand {
@@ -149,6 +154,32 @@ const COMMANDS: SlashCommand[] = [
       ctx.setRotor(ctx.rotor);
       ctx.refreshConfig?.();
       return [`base model → ${modelId}${local ? " (local)" : ""}`];
+    },
+  },
+  {
+    name: "use",
+    aliases: ["switch"],
+    summary: "switch a model for THIS session only (transient, audited): /use <modelId> [role]",
+    async run(ctx, args) {
+      if (args.length === 0) return ["usage: /use <modelId> [role]  — switch a model for this session (audited; /model persists it)"];
+      const to = args[0]!;
+      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor);
+      const role = args[1] ?? rotor.roles[0]?.role ?? "assistant";
+      // The role's current bound model → the from→to audit trail.
+      const binding = await ctx.client.rotorConfig
+        .binding(ctx.rotor)
+        .catch(() => ({ roles: [] as { role: string; modelId: string }[] }));
+      const from = binding.roles.find((r) => r.role === role)?.modelId;
+      await switchModel(ctx.client, {
+        sessionId: ctx.sessionId,
+        rotorSlug: ctx.rotor,
+        role,
+        to,
+        ...(from ? { from } : {}),
+        surface: "cli",
+      });
+      ctx.invalidateModels?.(); // next turn re-resolves with the override
+      return [`switched ${role} → ${to} for this session (audited)`, from ? `  was ${from} · durable binding unchanged (/model persists)` : "  durable binding unchanged (/model persists)"];
     },
   },
   {
