@@ -12,7 +12,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Client } from "@glyphh/client";
 import type { BasicModelsOptions } from "openrotor";
-import { localTurn, resolveModels } from "../local-runtime.js";
+import { localTurn } from "../local-runtime.js";
+// The governed model bridge lives in the SDK now — every client resolves the same way.
+import { resolveModels, sessionOverrides } from "@glyphh/client/runtime";
 import { readPrefs, writePrefs } from "../prefs.js";
 import { Header } from "./Header.js";
 import { Message } from "./Message.js";
@@ -85,6 +87,8 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   // The resolved model registry, cached per rotor (re-resolved when the rotor changes).
   const modelsCache = useRef<BasicModelsOptions | undefined>(undefined);
   const modelsForRotor = useRef<string | null>(null);
+  // A stable per-process id so a mid-session model switch's overrides + audit key together.
+  const sessionId = useRef<string>(`cli-${Date.now().toString(36)}-${process.pid}`);
 
   useEffect(() => {
     const onResize = () => {
@@ -154,7 +158,11 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         // caller's bearer; local models are served on demand by llama). Unbound → stub.
         if (modelsForRotor.current !== rotor) {
           try {
-            modelsCache.current = await resolveModels(client, await client.token(), rotor);
+            modelsCache.current = await resolveModels(client, {
+              rotorSlug: rotor,
+              token: await client.token(),
+              overrides: sessionOverrides(sessionId.current, rotor),
+            });
           } catch {
             modelsCache.current = undefined;
           }
@@ -162,7 +170,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         }
         // Run against the ONE local runtime, in-process (openrotor linked as a library;
         // memory in the shared SQLite stator). Remote sessions are a separate path.
-        const run = localTurn(prompt, modelsCache.current ? { models: modelsCache.current } : {});
+        const run = localTurn(prompt, modelsCache.current ? { models: modelsCache.current, session: sessionId.current } : { session: sessionId.current });
         let buffer = "";
         for await (const ev of run.events) {
           if (ev.kind === "step" && ev.frames.length) {
