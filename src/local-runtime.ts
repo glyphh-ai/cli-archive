@@ -11,7 +11,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { runInProcess, openSqliteStator, type WireEvent, type Stator } from "openrotor";
+import { runInProcess, openSqliteStator, type WireEvent, type Stator, type BasicModelsOptions, type ModelEndpoint } from "openrotor";
+import type { Client } from "@glyphh/client";
+import { ensureLocalModel } from "@glyphh/client/models";
 import { DEFAULT_ROTOR } from "./default-rotor.js";
 
 function glyphhHome(): string {
@@ -72,8 +74,41 @@ class EventQueue implements AsyncIterable<WireEvent> {
   }
 }
 
-/** Run a turn in-process against the shared local runtime + stator. */
-export function localTurn(prompt: string, session?: string): LocalRun {
+/**
+ * Resolve the control plane's role→model binding for `rotorSlug` into the openrotor model
+ * registry: gateway roles get the gateway url + the caller's bearer; local roles are served
+ * on-demand by llama (download once, run the singleton) and get its local url. Returns
+ * undefined when nothing is bound (the rotor then streams the basic-tier stub).
+ */
+export async function resolveModels(
+  client: Client,
+  token: string,
+  rotorSlug: string,
+): Promise<BasicModelsOptions | undefined> {
+  let resolved;
+  try {
+    resolved = await client.rotorConfig.registry(rotorSlug);
+  } catch {
+    return undefined; // control plane doesn't know this rotor / not reachable
+  }
+  if (!resolved.models.length) return undefined;
+
+  const registry: Record<string, ModelEndpoint> = {};
+  for (const m of resolved.models) {
+    if (m.transport === "gateway" && m.url) {
+      registry[m.role] = { url: m.url, model: m.model, headers: { authorization: `Bearer ${token}` }, metered: true };
+    } else if (m.transport === "local") {
+      // Local model ids may still carry a `provider::` prefix; ensureLocalModel wants the bare id.
+      const localId = m.model.includes("::") ? m.model.split("::")[1]! : m.model;
+      const server = await ensureLocalModel(localId); // download + serve if needed
+      registry[m.role] = { url: server.url, model: localId, metered: false };
+    }
+  }
+  return Object.keys(registry).length ? { registry } : undefined;
+}
+
+/** Run a turn in-process against the shared local runtime + stator, with a bound model registry. */
+export function localTurn(prompt: string, opts: { models?: BasicModelsOptions; session?: string } = {}): LocalRun {
   const queue = new EventQueue();
   let terminal: LocalResult = { status: "ok", terminal: "done", outputs: null };
   let errFrame: { code: string; detail: string } | undefined;
@@ -89,7 +124,7 @@ export function localTurn(prompt: string, session?: string): LocalRun {
           if (ev.kind === "done") terminal = { status: ev.status, terminal: ev.terminal, outputs: ev.outputs };
           if (ev.kind === "error") errFrame = { code: ev.code, detail: ev.detail };
         },
-        { store, ...(session ? { session } : {}) },
+        { store, ...(opts.models ? { models: opts.models } : {}), ...(opts.session ? { session: opts.session } : {}) },
       );
     } finally {
       queue.end();

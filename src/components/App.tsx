@@ -11,7 +11,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Client } from "@glyphh/client";
-import { localTurn } from "../local-runtime.js";
+import type { BasicModelsOptions } from "openrotor";
+import { localTurn, resolveModels } from "../local-runtime.js";
 import { Header } from "./Header.js";
 import { Message } from "./Message.js";
 import { InputBar } from "./InputBar.js";
@@ -75,6 +76,10 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   const [mode, setMode] = useState<PermissionMode>("ask");
   const [rotor, setRotorState] = useState(initialRotor);
 
+  // The resolved model registry, cached per rotor (re-resolved when the rotor changes).
+  const modelsCache = useRef<BasicModelsOptions | undefined>(undefined);
+  const modelsForRotor = useRef<string | null>(null);
+
   useEffect(() => {
     const onResize = () => {
       setCols(stdout.columns || 80);
@@ -96,7 +101,10 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
     [],
   );
 
-  const setRotor = useCallback((r: string) => setRotorState(r), []);
+  const setRotor = useCallback((r: string) => {
+    modelsForRotor.current = null; // re-resolve the binding for the new rotor
+    setRotorState(r);
+  }, []);
 
   const runTurn = useCallback(
     async (prompt: string) => {
@@ -109,9 +117,19 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       ]);
       setBusy(true);
       try {
+        // Resolve the rotor's role→model binding once per rotor (gateway models get the
+        // caller's bearer; local models are served on demand by llama). Unbound → stub.
+        if (modelsForRotor.current !== rotor) {
+          try {
+            modelsCache.current = await resolveModels(client, await client.token(), rotor);
+          } catch {
+            modelsCache.current = undefined;
+          }
+          modelsForRotor.current = rotor;
+        }
         // Run against the ONE local runtime, in-process (openrotor linked as a library;
         // memory in the shared SQLite stator). Remote sessions are a separate path.
-        const run = localTurn(prompt);
+        const run = localTurn(prompt, modelsCache.current ? { models: modelsCache.current } : {});
         let buffer = "";
         for await (const ev of run.events) {
           if (ev.kind === "step" && ev.frames.length) {
@@ -140,7 +158,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         setBusy(false);
       }
     },
-    [nextId, patch],
+    [client, rotor, nextId, patch],
   );
 
   const runCommand = useCallback(

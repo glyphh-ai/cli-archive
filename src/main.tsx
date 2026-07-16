@@ -15,7 +15,7 @@ import { App } from "./components/App.js";
 import { makeClient, serverUrl } from "./glyphh.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
-const ROTOR = process.env.GLYPHH_ROTOR ?? "default";
+const ROTOR = process.env.GLYPHH_ROTOR ?? "base";
 
 /** The working directory, with $HOME collapsed to `~`. */
 function displayCwd(): string {

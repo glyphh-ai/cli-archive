@@ -93,6 +93,37 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: "configure",
+    aliases: ["config", "models"],
+    summary: "show the selected rotor's model roles + how they're bound",
+    async run(ctx) {
+      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor).catch(() => null);
+      if (!rotor) return [`rotor "${ctx.rotor}" is not in the catalog`];
+      const binding = await ctx.client.rotorConfig.binding(ctx.rotor).catch(() => ({ roles: [] as { role: string; modelId: string; transport: string }[] }));
+      const bound = new Map(binding.roles.map((r) => [r.role, `${r.modelId} (${r.transport})`]));
+      const lines = [`${rotor.name} — ${rotor.roles.length} role(s):`];
+      for (const r of rotor.roles) lines.push(`  ${r.role}: ${bound.get(r.role) ?? "— unbound —"}  (needs: ${r.needs.join(", ")})`);
+      lines.push("bind with:  /bind <role>=<modelId>[:local]");
+      return lines;
+    },
+  },
+  {
+    name: "bind",
+    summary: "bind a rotor role to a model: /bind <role>=<modelId>[:local]",
+    async run(ctx, args) {
+      if (args.length === 0) return ["usage: /bind <role>=<modelId>[:local] …"];
+      const roles = args.map((p) => {
+        const [role, rest] = p.split("=");
+        if (!role || !rest) throw new Error(`bad pair: ${p}`);
+        const local = rest.endsWith(":local");
+        return { role, modelId: local ? rest.slice(0, -6) : rest, transport: (local ? "local" : "gateway") as "local" | "gateway" };
+      });
+      await ctx.client.rotorConfig.setBinding(ctx.rotor, { roles });
+      ctx.setRotor(ctx.rotor); // invalidate the resolved-registry cache
+      return ["binding saved", ...roles.map((r) => `  ${r.role} → ${r.modelId} (${r.transport})`)];
+    },
+  },
+  {
     name: "clear",
     summary: "clear the transcript",
     run(ctx) {
