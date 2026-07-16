@@ -8,6 +8,7 @@
  */
 
 import type { Client } from "@glyphh/client";
+import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
 import { loadAccount, type Account } from "./glyphh.js";
 
 export interface CommandCtx {
@@ -22,6 +23,8 @@ export interface CommandCtx {
   quit: () => void;
   /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
   emit: (lines: string[]) => void;
+  /** Reload the footer's model/config status (after a binding change). */
+  refreshConfig?: () => void;
 }
 
 export interface SlashCommand {
@@ -120,7 +123,56 @@ const COMMANDS: SlashCommand[] = [
       });
       await ctx.client.rotorConfig.setBinding(ctx.rotor, { roles });
       ctx.setRotor(ctx.rotor); // invalidate the resolved-registry cache
+      ctx.refreshConfig?.();
       return ["binding saved", ...roles.map((r) => `  ${r.role} → ${r.modelId} (${r.transport})`)];
+    },
+  },
+  {
+    name: "model",
+    summary: "list models, or set the base model: /model <modelId>[:local]",
+    async run(ctx, args) {
+      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor);
+      const primary = rotor.roles[0]?.role ?? "assistant";
+      if (args.length === 0) {
+        const models = await ctx.client.catalog.models();
+        const lines = [`available models (bind "${primary}"):`];
+        for (const m of models) lines.push(`  ${m.id}  (${m.kind === "open_weight" ? "local" : "hosted"})`);
+        lines.push("set hosted:  /model <modelId>        local:  /model <modelId>:local");
+        return lines;
+      }
+      const raw = args[0]!;
+      const local = raw.endsWith(":local");
+      const modelId = local ? raw.slice(0, -6) : raw;
+      await ctx.client.rotorConfig.setBinding(ctx.rotor, {
+        roles: [{ role: primary, modelId, transport: local ? "local" : "gateway" }],
+      });
+      ctx.setRotor(ctx.rotor);
+      ctx.refreshConfig?.();
+      return [`base model → ${modelId}${local ? " (local)" : ""}`];
+    },
+  },
+  {
+    name: "install",
+    summary: "install a local model (opt-in): /install [modelId]",
+    async run(ctx, args) {
+      const hw = detectHardware();
+      if (args.length === 0) {
+        const rec = recommendModel(hw);
+        const lines = [
+          `this machine: ${hw.totalRamGB}GB RAM${hw.appleSilicon ? " · Apple Silicon" : ""}`,
+          `recommended: ${rec.id} (${rec.name})`,
+          "installable:",
+          ...LOCAL_MODELS.map((m) => `  ${m.id}  ${m.name}  (needs ${m.minRamGB}GB)`),
+          "install:  /install <id>    then use it:  /model <id>:local",
+        ];
+        return lines;
+      }
+      const id = args[0]!;
+      ctx.emit([`installing ${id} — downloading weights, this can take a while…`]);
+      const server = await ensureLocalModel(id, {
+        onProgress: (phase, r) => ctx.emit([`${phase} ${Math.round(r * 100)}%`]),
+      });
+      return [`installed ${id}`, `serving at ${server.url}`, `use it:  /model ${id}:local`];
     },
   },
   {

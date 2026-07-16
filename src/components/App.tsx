@@ -13,6 +13,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Client } from "@glyphh/client";
 import type { BasicModelsOptions } from "openrotor";
 import { localTurn, resolveModels } from "../local-runtime.js";
+import { readPrefs, writePrefs } from "../prefs.js";
 import { Header } from "./Header.js";
 import { Message } from "./Message.js";
 import { InputBar } from "./InputBar.js";
@@ -73,8 +74,13 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<PermissionMode>("ask");
-  const [rotor, setRotorState] = useState(initialRotor);
+  // Permission mode + the selected rotor are per-device prefs (~/.glyphh/config.json).
+  const [mode, setMode] = useState<PermissionMode>(() => readPrefs().permissionMode ?? "ask");
+  const [rotor, setRotorState] = useState(() => readPrefs().rotor ?? initialRotor);
+  // Footer status: the base rotor's bound model + whether all its roles are bound.
+  const [modelLabel, setModelLabel] = useState<string>("not set");
+  const [configured, setConfigured] = useState(false);
+  const [configVersion, setConfigVersion] = useState(0); // bump to reload after /bind
 
   // The resolved model registry, cached per rotor (re-resolved when the rotor changes).
   const modelsCache = useRef<BasicModelsOptions | undefined>(undefined);
@@ -95,6 +101,32 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
     void loadAccount(client).then(setAccount);
   }, [client]);
 
+  // The selected rotor's model binding → footer (base model + configured status).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [r, b] = await Promise.all([client.rotorConfig.rotor(rotor), client.rotorConfig.binding(rotor)]);
+        if (cancelled) return;
+        const bound = new Map(b.roles.map((x) => [x.role, x]));
+        const primaryRole = r.roles[0]?.role;
+        const primary = primaryRole ? bound.get(primaryRole) : undefined;
+        setModelLabel(
+          primary ? `${primary.modelId.split("::").pop()}${primary.transport === "local" ? " (local)" : ""}` : "not set",
+        );
+        setConfigured(r.roles.length > 0 && r.roles.every((role) => bound.has(role.role)));
+      } catch {
+        if (!cancelled) {
+          setModelLabel("not set");
+          setConfigured(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, rotor, configVersion]);
+
   const patch = useCallback(
     (id: string, fn: (m: ChatMessage) => ChatMessage) =>
       setMessages((list) => list.map((m) => (m.id === id ? fn(m) : m))),
@@ -104,6 +136,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   const setRotor = useCallback((r: string) => {
     modelsForRotor.current = null; // re-resolve the binding for the new rotor
     setRotorState(r);
+    writePrefs({ rotor: r });
   }, []);
 
   const runTurn = useCallback(
@@ -176,6 +209,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         clearChat: () => setMessages([]),
         quit: () => exit(),
         emit: (lines) => patch(id, (m) => ({ ...m, result: lines })),
+        refreshConfig: () => setConfigVersion((v) => v + 1),
       };
       const result = await runSlash(ctx, line);
       patch(id, (m) => ({ ...m, result }));
@@ -197,7 +231,9 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
 
   useInput((ch, key) => {
     if (key.tab && key.shift) {
-      setMode((m) => MODES[(MODES.indexOf(m) + 1) % MODES.length]!);
+      const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length]!;
+      setMode(next);
+      writePrefs({ permissionMode: next }); // persist per-device
       return;
     }
     if (key.return) return submit();
@@ -220,7 +256,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         )}
       </Box>
       <InputBar width={cols} value={input} busy={busy} />
-      <Footer width={cols} permissionMode={mode} rotor={rotor} />
+      <Footer width={cols} permissionMode={mode} rotor={rotor} model={modelLabel} configured={configured} />
     </Box>
   );
 }

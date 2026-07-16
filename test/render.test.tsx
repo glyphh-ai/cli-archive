@@ -45,12 +45,15 @@ describe("TUI layout", () => {
     expect(frame).toContain("›");
   });
 
-  it("footer shows permission mode (left) and rotor (right)", () => {
-    const { lastFrame } = render(<Footer width={60} permissionMode="auto" rotor="glyphh-coder" />);
+  it("footer shows permission mode, base model, and rotor with config status", () => {
+    const { lastFrame } = render(
+      <Footer width={80} permissionMode="auto" model="claude-sonnet-5" configured rotor="base" />,
+    );
     const frame = lastFrame()!;
-    expect(frame).toContain("auto-approve");
-    expect(frame).toContain("rotor");
-    expect(frame).toContain("glyphh-coder");
+    expect(frame).toContain("auto-approve"); // permission (left)
+    expect(frame).toContain("model claude-sonnet-5"); // base model
+    expect(frame).toContain("✓"); // configured
+    expect(frame).toContain("rotor base"); // rotor (right)
   });
 
   it("message: user input bar, answer bullet, and the duration + credits meta", () => {
