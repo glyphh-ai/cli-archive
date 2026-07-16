@@ -10,9 +10,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import type { Client, Session } from "@glyphh/client";
-import { isWireEvent } from "@glyphh/client";
-import { ensureLocalRuntime } from "@glyphh/client/runtime";
+import type { Client } from "@glyphh/client";
+import { localTurn } from "../local-runtime.js";
 import { Header } from "./Header.js";
 import { Message } from "./Message.js";
 import { InputBar } from "./InputBar.js";
@@ -76,8 +75,6 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   const [mode, setMode] = useState<PermissionMode>("ask");
   const [rotor, setRotorState] = useState(initialRotor);
 
-  const sessionRef = useRef<Session | null>(null);
-
   useEffect(() => {
     const onResize = () => {
       setCols(stdout.columns || 80);
@@ -99,27 +96,12 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
     [],
   );
 
-  const setRotor = useCallback((r: string) => {
-    sessionRef.current = null; // re-provision on the next turn
-    setRotorState(r);
-  }, []);
-
-  const ensureSession = useCallback(async (): Promise<Session> => {
-    if (sessionRef.current) return sessionRef.current;
-    // The desktop/CLI talks to the ONE local runtime per machine — started
-    // transparently on first use, shared with any other local client. (Remote
-    // provisioning via client.sessions.create is a separate, control-plane path.)
-    const rt = await ensureLocalRuntime();
-    const s = client.session({ url: rt.url, rotor });
-    sessionRef.current = s;
-    return s;
-  }, [client, rotor]);
+  const setRotor = useCallback((r: string) => setRotorState(r), []);
 
   const runTurn = useCallback(
     async (prompt: string) => {
       const answerId = nextId();
       const startedAt = Date.now();
-      const creditsBefore = account?.credits ?? null;
       setMessages((m) => [
         ...m,
         { id: nextId(), role: "user", text: prompt },
@@ -127,11 +109,11 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       ]);
       setBusy(true);
       try {
-        const session = await ensureSession();
-        const run = session.turn(prompt);
+        // Run against the ONE local runtime, in-process (openrotor linked as a library;
+        // memory in the shared SQLite stator). Remote sessions are a separate path.
+        const run = localTurn(prompt);
         let buffer = "";
         for await (const ev of run.events) {
-          if (!isWireEvent(ev)) continue;
           if (ev.kind === "step" && ev.frames.length) {
             buffer += ev.frames.join("");
             patch(answerId, (m) => ({ ...m, text: buffer }));
@@ -144,29 +126,21 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         }
         const result = await run.done;
         const durationMs = Date.now() - startedAt;
-        let credits: number | null = null;
-        try {
-          const bal = await client.billing.balance();
-          if (creditsBefore !== null) credits = Math.max(0, creditsBefore - bal.credits);
-          setAccount((a) => (a ? { ...a, credits: bal.credits } : a));
-        } catch {
-          /* balance best-effort */
-        }
         const status: TurnMeta["status"] = result.status === "error" || result.error ? "error" : "done";
-        patch(answerId, (m) => ({ ...m, streaming: false, meta: { status, credits, durationMs } }));
+        patch(answerId, (m) => ({ ...m, streaming: false, meta: { status, credits: null, durationMs } }));
       } catch (err) {
         const durationMs = Date.now() - startedAt;
         patch(answerId, (m) => ({
           ...m,
           streaming: false,
-          text: m.text || `couldn't reach the runtime: ${(err as Error).message}`,
+          text: m.text || `local runtime error: ${(err as Error).message}`,
           meta: { status: "error", credits: null, durationMs },
         }));
       } finally {
         setBusy(false);
       }
     },
-    [account, client, ensureSession, nextId, patch],
+    [nextId, patch],
   );
 
   const runCommand = useCallback(
