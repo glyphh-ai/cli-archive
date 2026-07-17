@@ -11,7 +11,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { runInProcess, openSqliteStator, type WireEvent, type Stator, type BasicModelsOptions } from "openrotor";
+import { runInProcess, openSqliteStator, type WireEvent, type Stator, type BasicModelsOptions } from "rrotor";
 import { DEFAULT_ROTOR } from "./default-rotor.js";
 
 function glyphhHome(): string {

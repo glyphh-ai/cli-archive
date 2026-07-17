@@ -22,7 +22,7 @@
     "@glyphh/client": "file:../sdk",
     "ink": "^5.0.1",
     "ink-spinner": "^5.0.0",
-    "openrotor": "file:../openrotor",
+    "rrotor": "file:../rrotor",
     "react": "^18.3.1"
   },
   "devDependencies": {

@@ -11,7 +11,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { Client } from "@glyphh/client";
-import type { BasicModelsOptions } from "openrotor";
+import type { BasicModelsOptions } from "rrotor";
 import { localTurn } from "../local-runtime.js";
 // The governed model bridge lives in the SDK now — every client resolves the same way.
 import { resolveModels, sessionOverrides } from "@glyphh/client/runtime";
