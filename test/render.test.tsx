@@ -18,6 +18,7 @@ import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
+import { isReadOnlyTool, connectionAuthHint } from "../src/components/App.js";
 import { CAT_ROWS } from "../src/banner.js";
 import { answerLines, commandLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
@@ -191,5 +192,39 @@ describe("themes", () => {
 describe("open browser", () => {
   it("returns a boolean and never throws", () => {
     expect(typeof openBrowser("https://glyphh.ai/device")).toBe("boolean");
+  });
+});
+
+describe("permission-gate classification", () => {
+  it("treats local read tools as read-only (no prompt)", () => {
+    for (const t of ["Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch"]) {
+      expect(isReadOnlyTool(t)).toBe(true);
+    }
+  });
+
+  it("treats Glyphh MCP read verbs as read-only", () => {
+    for (const t of ["list_apps", "get_app", "search_registry", "browse_marketplace", "desktop_native_apps_list"]) {
+      expect(isReadOnlyTool(t)).toBe(true);
+    }
+  });
+
+  it("NEVER classifies a mutating/exec tool as read-only (must prompt)", () => {
+    for (const t of ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit",
+      "create_app_entry", "deploy_app", "create_skill", "desktop_native_app_open",
+      "conn__gmail__gmail-send-email"]) {
+      expect(isReadOnlyTool(t)).toBe(false);
+    }
+  });
+});
+
+describe("connection-auth hint", () => {
+  it("turns an unauthorized-connection error into an actionable note", () => {
+    const hint = connectionAuthHint("conn__google_drive__google_drive-create-folder", "No access/refresh token");
+    expect(hint).toMatch(/google drive/i);
+    expect(hint).toMatch(/connect/i);
+  });
+
+  it("returns null for a normal (non-auth) tool error", () => {
+    expect(connectionAuthHint("Bash", "command not found: foo")).toBeNull();
   });
 });

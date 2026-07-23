@@ -58,6 +58,41 @@ const VERBS: Array<{ ing: string; past: string }> = [
 /** Most recent turns sent to the model — bounds the wire, not the transcript. */
 const HISTORY_CAP = 40;
 
+/** Read-only tools — no side effects, so they never prompt. Covers the local
+ *  built-ins that only observe plus the Glyphh MCP read tools. EXPORTED so the
+ *  permission classification (the safety-critical bit) is unit-tested. */
+export const READ_BUILTINS = new Set([
+  "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "NotebookRead", "TodoWrite",
+  "desktop_panels_list", "desktop_native_apps_list",
+]);
+export const READ_PREFIX = /^(list|get|read|find|search|status|browse)/; // Glyphh MCP reads
+export const isReadOnlyTool = (tool: string): boolean =>
+  READ_BUILTINS.has(tool) || READ_PREFIX.test(tool);
+
+/** A tool receipt label with its key argument inlined, so the transcript reads
+ *  like actions ("Write index.html", "Bash mkdir -p …") instead of bare names. */
+function toolLabel(name: string, input: unknown): string {
+  const o = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const s = (v: unknown): string => (typeof v === "string" ? v : "");
+  const arg =
+    s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || s(o.query) || "";
+  if (!arg) return name;
+  const short = arg.length > 72 ? `${arg.slice(0, 71)}…` : arg;
+  return `${name}  ${short}`;
+}
+
+/** A governed connection that isn't authorized comes back as a raw tool error
+ *  ("No access/refresh token", "not authorized", …). Detect it so the TUI can
+ *  say what to actually do instead of surfacing the raw failure. */
+const CONN_AUTH_RE = /(access|refresh)[\s/]{0,3}(token|credential)|token (is )?(expired|missing|invalid|revoked)|not authori[sz]ed|unauthori[sz]ed|reconnect|connect (your |the )?[\w ]+ account/i;
+export function connectionAuthHint(toolName: string, content: string): string | null {
+  if (!CONN_AUTH_RE.test(content)) return null;
+  const svc = toolName.startsWith("conn__")
+    ? (toolName.split("__")[1] || "that connection").replace(/[-_]/g, " ")
+    : "that connection";
+  return `${svc} isn't connected. Connect it in the Glyphh app (Connections), then retry.`;
+}
+
 /** Omit that distributes over a union (plain Omit collapses discriminants). */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -113,7 +148,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   // The conversation the model sees — user/assistant turns, capped for the wire.
   const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   /** A pending tool approval (ask mode): the strip prompts, y/n/a answers. */
-  const [gatePending, setGatePending] = useState<{ tool: string } | null>(null);
+  const [gatePending, setGatePending] = useState<{ tool: string; preview: string } | null>(null);
   const gateResolve = useRef<((ok: boolean) => void) | null>(null);
   /** Tools the user answered "a"lways for — auto-allowed for this session. */
   const sessionAllowed = useRef<Set<string>>(new Set());
@@ -224,25 +259,34 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Tool names that only read — permitted without asking in read-only mode. */
-  const READ_TOOL = /^(list|get|read|find|search|status|browse|desktop_panels_list|desktop_native_apps_list)/;
+  /** Short human preview of what a mutating tool will do, for the approval strip:
+   *  the bash command, the file path, the fetched url, etc. */
+  const gatePreview = (input: unknown): string => {
+    const o = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const s = (v: unknown): string => (typeof v === "string" ? v : "");
+    const pick = s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || "";
+    return pick ? (pick.length > 96 ? `${pick.slice(0, 95)}…` : pick) : "";
+  };
 
-  /** The permission gate, per the mode chip: auto allows, plan refuses (the model
-   *  plans without executing), read-only allows read tools and refuses the rest,
-   *  ask prompts in the strip (y allows once, a allows for the session, n refuses). */
-  const gateTool = useCallback((tool: string): Promise<boolean> => {
+  /** The permission gate, per the mode chip. Read-only tools always pass (no
+   *  prompt) except in plan mode; mutating/exec tools (Bash, Write, Edit,
+   *  create_*, deploy_*, connection + desktop control) prompt in ask mode,
+   *  auto-run in auto, and are refused in read-only/plan. */
+  const gateTool = useCallback((tool: string, input: unknown): Promise<boolean> => {
     const m = modeRef.current;
-    if (m === "auto") return Promise.resolve(true);
-    if (m === "plan") return Promise.resolve(false);
+    const ro = isReadOnlyTool(tool);
+    if (m === "plan") return Promise.resolve(ro);        // explore to plan, never mutate
+    if (m === "read-only") return Promise.resolve(ro);
+    if (ro) return Promise.resolve(true);                // reads never prompt
+    if (m === "auto") return Promise.resolve(true);      // auto: run mutations unprompted
     if (sessionAllowed.current.has(tool)) return Promise.resolve(true);
-    if (m === "read-only") return Promise.resolve(READ_TOOL.test(tool));
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean>((resolve) => {           // ask: prompt for this mutation
       gateResolve.current = (ok) => {
         gateResolve.current = null;
         setGatePending(null);
         resolve(ok);
       };
-      setGatePending({ tool });
+      setGatePending({ tool, preview: gatePreview(input) });
     });
   }, []);
 
@@ -299,7 +343,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
               history: history.current.slice(-HISTORY_CAP),
               prompt,
               cwd: process.cwd(),
-              gate: (tool) => gateTool(tool),
+              gate: (tool, input) => gateTool(tool, input),
             },
             {
               onDelta: (t) => {
@@ -318,16 +362,19 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
               onTool: (name, input) => {
                 segId = null; // next text lands BELOW this receipt
                 pendingTool = name;
-                const args = input ? JSON.stringify(input) : "";
-                push({
-                  kind: "section",
-                  step: { label: name, ok: true, details: args && args !== "{}" ? [args.length > 100 ? `${args.slice(0, 99)}…` : args] : [] },
-                });
+                push({ kind: "section", step: { label: toolLabel(name, input), ok: true, details: [] } });
               },
               onToolResult: (content, isError) => {
                 segId = null;
                 const label = pendingTool ?? "tool";
                 pendingTool = null;
+                // An unauthorized connection surfaces as an error — turn it into
+                // an actionable note rather than a raw failure receipt.
+                const hint = isError ? connectionAuthHint(label, content) : null;
+                if (hint) {
+                  push({ kind: "note", text: hint });
+                  return;
+                }
                 if (content || isError) {
                   push({
                     kind: "section",
@@ -609,9 +656,14 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       <Box flexDirection="column" ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
         {gatePending ? (
-          <Text color={theme.accent} wrap="truncate-end">
-            {`  ⏸ ${gatePending.tool} — allow? (y)es once · (a)lways this session · (n)o`}
-          </Text>
+          <Box flexDirection="column">
+            <Text color={theme.accent} wrap="truncate-end">
+              {`  ⏸ ${gatePending.tool}${gatePending.preview ? `  ${gatePending.preview}` : ""}`}
+            </Text>
+            <Text color={theme.faint} wrap="truncate-end">
+              {"     allow? (y)es once · (a)lways this session · (n)o"}
+            </Text>
+          </Box>
         ) : null}
         <InputBar width={cols} value={input} busy={busy} />
         <Footer width={cols} permissionMode={mode} loop={loop} slots={slots} />

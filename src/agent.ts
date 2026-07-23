@@ -123,9 +123,11 @@ export interface AgentTurnOptions {
 }
 
 const SYSTEM = [
-  "You are Glyphh, the user's agent. Answer directly and concisely.",
-  "You have tools: the user's Glyphh platform (apps, loops, skills, agents), their governed connections, and machine control on the user's attached machine — this CLI attaches as one, so desktop_native_app_open / desktop_native_apps_list / desktop_layout_open generally work right here.",
-  "When asked to open or control something, TRY the tool rather than assuming no machine is attached — the tool's own error will say if none is.",
+  "You are Glyphh, the user's coding agent, running in a terminal ON THE USER'S MACHINE in their current working directory. Answer directly and concisely.",
+  "You have the full local toolset: Bash (run shell commands), Read/Write/Edit (files), Glob/Grep (search), and WebFetch/WebSearch (read the web). USE THEM to do real work here — create directories, write files, run commands, fetch pages. Do not tell the user to paste commands into a terminal themselves; you ARE in the terminal, so just do it.",
+  "You also have Glyphh platform tools (apps, loops, skills, agents) and the user's governed connections (mcp__glyphh__*).",
+  "The desktop_* tools reach a SEPARATE attached desktop app to control ITS windows/apps/layouts — use them ONLY to control that desktop, never for local work (to read a web page use WebFetch, not desktop_scrape_page; to make a file use Write, not the desktop).",
+  "Prefer the simplest tool that does the job locally. When a tool errors, read its message and adapt rather than giving up.",
 ].join(" ");
 
 /** Assemble the per-run prompt the way the desktop does (persistSession is off —
@@ -173,7 +175,12 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
       model,
       systemPrompt: SYSTEM,
       settingSources: [],
-      tools: [], // no built-ins — the glyphh surface is the whole toolset
+      // The full Claude Code local toolset (Bash/Read/Write/Edit/Glob/Grep/
+      // WebFetch/WebSearch) — the CLI runs ON the user's machine, so these are
+      // exactly the tools that let it do real work. The Glyphh MCP surface
+      // (platform + connections + desktop reach) is layered on top. Every call
+      // still passes through canUseTool below, so nothing runs unapproved.
+      tools: { type: "preset", preset: "claude_code" },
       mcpServers: {
         glyphh: { type: "http", url: `${server.replace(/\/+$/, "")}/mcp`, headers: { authorization: `Bearer ${grant}` } },
       },
