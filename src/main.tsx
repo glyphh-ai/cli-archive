@@ -15,7 +15,9 @@ import { App } from "./components/App.js";
 import { makeClient, serverUrl } from "./glyphh.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
-const ROTOR = process.env.GLYPHH_ROTOR ?? "base";
+// The loop to open with. `GLYPHH_ROTOR` is honored for back-compat; the built-in
+// "default" loop is the general catch-all when nothing is set.
+const LOOP = process.env.GLYPHH_LOOP ?? process.env.GLYPHH_ROTOR ?? "default";
 
 /** The working directory, with $HOME collapsed to `~`. */
 function displayCwd(): string {
@@ -44,7 +46,7 @@ function main(): void {
   process.on("exit", restore);
 
   const { waitUntilExit } = render(
-    <App client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} rotor={ROTOR} />,
+    <App client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} />,
   );
   waitUntilExit()
     .then(restore)

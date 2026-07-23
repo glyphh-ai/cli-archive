@@ -14,7 +14,7 @@ export const theme = {
   gray: "#8a8a8a",
   /** Dim gray — borders, hints, the quiet chrome. */
   dim: "#585858",
-  /** The one accent. Used sparingly: focus, the wordmark, the active rotor. */
+  /** The one accent. Used sparingly: focus, the wordmark, the active loop. */
   purple: "#af5fff",
 } as const;
 

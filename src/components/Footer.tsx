@@ -1,10 +1,11 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * Footer.tsx — the status line beneath the composer, showing the three things the CLI
- * sets: the permission mode (per-device pref), the base model bound to the rotor (from
- * the control plane), and the selected rotor with a configured indicator. Chrome, not
- * content — quiet by design.
+ * Footer.tsx — the status line beneath the composer, mirroring the desktop agent: the
+ * permission mode sits far LEFT, and the right cluster carries the loop's resolved model
+ * slots followed by the loop itself, furthest right. Chrome, not content — quiet by
+ * design. Everything shown is resolved server-side (`loops.roles`) and rendered verbatim,
+ * so the chip and the run can't disagree.
  */
 
 import React from "react";
@@ -12,14 +13,19 @@ import { Box, Text } from "ink";
 import { theme } from "../theme.js";
 import type { PermissionMode } from "../types.js";
 
+/** One resolved model slot: its label and the model that will fill it (null = unset). */
+export interface FooterSlot {
+  label: string;
+  model: string | null;
+}
+
 export interface FooterProps {
   width: number;
   permissionMode: PermissionMode;
-  /** The model bound to the rotor's primary role (or "not set"). */
-  model: string;
-  /** All of the rotor's roles are bound. */
-  configured: boolean;
-  rotor: string;
+  /** The selected loop's slug. */
+  loop: string;
+  /** The loop's model slots, resolved for this caller (empty while loading/offline). */
+  slots: FooterSlot[];
 }
 
 const MODE_GLYPH: Record<PermissionMode, string> = {
@@ -29,18 +35,37 @@ const MODE_GLYPH: Record<PermissionMode, string> = {
   "read-only": "◎ read-only",
 };
 
-export function Footer({ width, permissionMode, model, configured, rotor }: FooterProps): React.ReactElement {
-  const set = model !== "not set";
+/** One slot chip. A single-slot loop shows just its model; a multi-slot loop prefixes
+ *  each with its label so "planner" and "coder" stay distinguishable. */
+function Slot({ slot, solo }: { slot: FooterSlot; solo: boolean }): React.ReactElement {
+  const set = slot.model !== null;
+  return (
+    <Text>
+      {solo ? null : <Text color={theme.gray}>{slot.label} </Text>}
+      <Text color={set ? theme.purple : theme.dim}>{slot.model ?? "not set"}</Text>
+    </Text>
+  );
+}
+
+export function Footer({ width, permissionMode, loop, slots }: FooterProps): React.ReactElement {
+  const solo = slots.length === 1;
   return (
     <Box width={width} paddingX={1} justifyContent="space-between">
       <Text color={theme.gray}>{MODE_GLYPH[permissionMode]}</Text>
       <Box>
-        <Text color={theme.gray}>model </Text>
-        <Text color={set ? theme.purple : theme.dim}>{model}</Text>
+        {slots.length === 0 ? (
+          <Text color={theme.dim}>no model</Text>
+        ) : (
+          slots.map((s, i) => (
+            <React.Fragment key={s.label}>
+              {i > 0 ? <Text color={theme.dim}> · </Text> : null}
+              <Slot slot={s} solo={solo} />
+            </React.Fragment>
+          ))
+        )}
         <Text color={theme.dim}>{"   ·   "}</Text>
-        <Text color={configured ? theme.purple : theme.dim}>{configured ? "✓" : "○"}</Text>
-        <Text color={theme.gray}> rotor </Text>
-        <Text color={theme.purple}>{rotor}</Text>
+        <Text color={theme.gray}>loop </Text>
+        <Text color={theme.purple}>{loop}</Text>
       </Box>
     </Box>
   );

@@ -3,7 +3,7 @@
  *
  * render.test.tsx — layout verification without a TTY. ink-testing-library renders each
  * region to a plain-text frame we can assert on: the version in the header outline, the
- * cat, the account, the Send button, the permission mode, the rotor. The transcript is
+ * cat, the account, the Send button, the permission mode, the loop. The transcript is
  * a LINE MODEL (lines.ts) — pure functions asserted directly, plus a styled-line render.
  */
 
@@ -48,15 +48,40 @@ describe("TUI layout", () => {
     expect(frame).toContain("›");
   });
 
-  it("footer shows permission mode, base model, and rotor with config status", () => {
+  it("footer shows permission mode far-left, then model slots, then the loop far-right", () => {
     const { lastFrame } = render(
-      <Footer width={80} permissionMode="auto" model="claude-sonnet-5" configured rotor="base" />,
+      <Footer
+        width={80}
+        permissionMode="auto"
+        loop="default"
+        slots={[{ label: "default", model: "claude-sonnet-5" }]}
+      />,
     );
     const frame = lastFrame()!;
-    expect(frame).toContain("auto-approve"); // permission (left)
-    expect(frame).toContain("model claude-sonnet-5"); // base model
-    expect(frame).toContain("✓"); // configured
-    expect(frame).toContain("rotor base"); // rotor (right)
+    expect(frame).toContain("auto-approve"); // permission (far left)
+    expect(frame).toContain("claude-sonnet-5"); // resolved model slot
+    expect(frame).toContain("loop default"); // loop (far right)
+    // Order: permission before model before loop.
+    expect(frame.indexOf("auto-approve")).toBeLessThan(frame.indexOf("claude-sonnet-5"));
+    expect(frame.indexOf("claude-sonnet-5")).toBeLessThan(frame.indexOf("loop default"));
+  });
+
+  it("footer labels each slot when a loop declares more than one", () => {
+    const { lastFrame } = render(
+      <Footer
+        width={100}
+        permissionMode="ask"
+        loop="planning"
+        slots={[
+          { label: "planner", model: "claude-opus-4-8" },
+          { label: "coder", model: "claude-haiku-4-5" },
+        ]}
+      />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("planner claude-opus-4-8");
+    expect(frame).toContain("coder claude-haiku-4-5");
+    expect(frame).toContain("loop planning");
   });
 });
 

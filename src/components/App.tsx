@@ -9,7 +9,7 @@
  * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
  * scroll, tab enters BROWSE mode (walk step receipts, enter unfolds one,
  * ctrl+o unfolds all — retroactively, because lines regenerate from items).
- * A leading `/` runs a slash command; plain text streams a rotor turn whose
+ * A leading `/` runs a slash command; plain text streams a loop turn whose
  * steps land as collapsible receipts and whose answer lands as the `●` line.
  * All capability comes from the SDK — nothing here talks to an API directly.
  */
@@ -21,10 +21,10 @@ import type { BasicModelsOptions } from "rrotor";
 import { localTurn } from "../local-runtime.js";
 // The governed model bridge lives in the SDK — every client resolves the same way.
 import { resolveModels, sessionOverrides } from "@glyphh/client/runtime";
-import { readPrefs, writePrefs } from "../prefs.js";
+import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
 import { Header } from "./Header.js";
 import { InputBar } from "./InputBar.js";
-import { Footer } from "./Footer.js";
+import { Footer, type FooterSlot } from "./Footer.js";
 import { SubFooter } from "./SubFooter.js";
 import { TranscriptLine } from "./TranscriptLine.js";
 import { theme } from "../theme.js";
@@ -64,10 +64,10 @@ export interface AppProps {
   version: string;
   server: string;
   cwd: string;
-  rotor: string;
+  loop: string;
 }
 
-export function App({ client, version, server, cwd, rotor: initialRotor }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, loop: initialLoop }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -89,13 +89,12 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   /** Lines scrolled up from the tail; 0 = follow mode. */
   const [scroll, setScroll] = useState(0);
   const [chromeH, setChromeH] = useState({ header: 9, strip: 6 });
-  // Permission mode + the selected rotor are per-device prefs (~/.glyphh/config.json).
+  // Permission mode + the selected loop are per-device prefs (~/.glyphh/config.json).
   const [mode, setMode] = useState<PermissionMode>(() => readPrefs().permissionMode ?? "ask");
-  const [rotor, setRotorState] = useState(() => readPrefs().rotor ?? initialRotor);
-  // Footer status: the base rotor's bound model + whether all its roles are bound.
-  const [modelLabel, setModelLabel] = useState<string>("not set");
-  const [configured, setConfigured] = useState(false);
-  const [configVersion, setConfigVersion] = useState(0); // bump to reload after /bind
+  const [loop, setLoopState] = useState(() => readPrefs().loop ?? initialLoop);
+  // Footer status: the loop's resolved model slots (empty while loading / offline).
+  const [slots, setSlots] = useState<FooterSlot[]>([]);
+  const [configVersion, setConfigVersion] = useState(0); // bump to reload after a pick
 
   const nextId = useRef(0);
   const lastStepAt = useRef(0);
@@ -103,9 +102,9 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
   const inputRef = useRef("");
   const headerBox = useRef<DOMElement | null>(null);
   const stripBox = useRef<DOMElement | null>(null);
-  // The resolved model registry, cached per rotor (re-resolved when the rotor changes).
+  // The resolved model registry, cached per loop (re-resolved when the loop changes).
   const modelsCache = useRef<BasicModelsOptions | undefined>(undefined);
-  const modelsForRotor = useRef<string | null>(null);
+  const modelsForLoop = useRef<string | null>(null);
   // A stable per-process id so a mid-session model switch's overrides + audit key together.
   const sessionId = useRef<string>(`cli-${Date.now().toString(36)}-${process.pid}`);
 
@@ -137,31 +136,29 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
     if (header !== chromeH.header || strip !== chromeH.strip) setChromeH({ header, strip });
   });
 
-  // The selected rotor's model binding → footer (base model + configured status).
+  // The selected loop's resolved model slots → footer. One call (`loops.roles`) both the
+  // footer and the run read, so a chip can't show a model the turn won't use.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [r, b] = await Promise.all([client.rotorConfig.rotor(rotor), client.rotorConfig.binding(rotor)]);
+        const roles = await client.loops.roles(loop, selectionsFor(loop));
         if (cancelled) return;
-        const bound = new Map(b.roles.map((x) => [x.role, x]));
-        const primaryRole = r.roles[0]?.role;
-        const primary = primaryRole ? bound.get(primaryRole) : undefined;
-        setModelLabel(
-          primary ? `${primary.modelId.split("::").pop()}${primary.transport === "local" ? " (local)" : ""}` : "not set",
+        setSlots(
+          roles.map((r) => ({
+            label: r.label || r.name,
+            // The catalog's display name for the resolved model, else its bare id.
+            model: r.modelId ? (r.choices.find((c) => c.id === r.modelId)?.name ?? r.modelId.split("::").pop() ?? r.modelId) : null,
+          })),
         );
-        setConfigured(r.roles.length > 0 && r.roles.every((role) => bound.has(role.role)));
       } catch {
-        if (!cancelled) {
-          setModelLabel("not set");
-          setConfigured(false);
-        }
+        if (!cancelled) setSlots([]);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [client, rotor, configVersion]);
+  }, [client, loop, configVersion]);
 
   const push = useCallback((item: DistributiveOmit<Item, "id">): string => {
     const id = `i${++nextId.current}`;
@@ -178,10 +175,10 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
     setInput(inputRef.current);
   }, []);
 
-  const setRotor = useCallback((r: string) => {
-    modelsForRotor.current = null; // re-resolve the binding for the new rotor
-    setRotorState(r);
-    writePrefs({ rotor: r });
+  const setLoop = useCallback((l: string) => {
+    modelsForLoop.current = null; // re-resolve the binding for the new loop
+    setLoopState(l);
+    writePrefs({ loop: l });
   }, []);
 
   // Welcome card — mount-only by design.
@@ -190,9 +187,9 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       kind: "card",
       title: "Glyphh",
       body: [
-        "Every line you type is one full rotor turn: deterministic steps, streamed live as receipts.",
+        "Every line you type is one full loop turn: deterministic steps, streamed live as receipts.",
         "tab browses/unfolds steps · ctrl+o unfolds all · shift+tab cycles permission mode",
-        "/help for commands · /login to sign in · /rotor to switch loops",
+        "/help for commands · /login to sign in · /loop to switch loops",
       ],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -219,19 +216,21 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       setLast({ ...turn });
       setBusy(true);
       try {
-        // Resolve the rotor's role→model binding once per rotor (gateway models get the
+        // Resolve the loop's slot→model binding once per loop (gateway models get the
         // caller's bearer; local models are served on demand by llama). Unbound → stub.
-        if (modelsForRotor.current !== rotor) {
+        // This device's per-loop picks layer in as overrides — the same picks `loops.roles`
+        // feeds the footer — and a live `/use` switch wins over both.
+        if (modelsForLoop.current !== loop) {
           try {
             modelsCache.current = await resolveModels(client, {
-              rotorSlug: rotor,
+              rotorSlug: loop,
               token: await client.token(),
-              overrides: sessionOverrides(sessionId.current, rotor),
+              overrides: { ...selectionsFor(loop), ...sessionOverrides(sessionId.current, loop) },
             });
           } catch {
             modelsCache.current = undefined;
           }
-          modelsForRotor.current = rotor;
+          modelsForLoop.current = loop;
         }
         // Run against the ONE local runtime, in-process (openrotor linked as a library;
         // memory in the shared SQLite stator). Remote sessions are a separate path.
@@ -292,7 +291,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         setBusy(false);
       }
     },
-    [client, rotor, push],
+    [client, loop, push],
   );
 
   const runCommand = useCallback(
@@ -301,11 +300,11 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       const ctx: CommandCtx = {
         client,
         account,
-        rotor,
+        loop,
         version,
         server,
         setAccount,
-        setRotor,
+        setLoop,
         clearChat: () => {
           setItems([]);
           setFolds({});
@@ -318,13 +317,13 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
         refreshConfig: () => setConfigVersion((v) => v + 1),
         sessionId: sessionId.current,
         invalidateModels: () => {
-          modelsForRotor.current = null;
+          modelsForLoop.current = null;
         },
       };
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, exit, patchItem, push, rotor, server, setRotor, version],
+    [account, client, exit, patchItem, push, loop, server, setLoop, version],
   );
 
   const submit = useCallback(() => {
@@ -517,7 +516,7 @@ export function App({ client, version, server, cwd, rotor: initialRotor }: AppPr
       <Box flexDirection="column" ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
         <InputBar width={cols} value={input} busy={busy} />
-        <Footer width={cols} permissionMode={mode} rotor={rotor} model={modelLabel} configured={configured} />
+        <Footer width={cols} permissionMode={mode} loop={loop} slots={slots} />
       </Box>
     </Box>
   );

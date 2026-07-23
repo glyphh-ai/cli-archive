@@ -2,33 +2,39 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * commands.ts — the TUI's slash commands. A leading `/` routes here instead of to the
- * rotor. Each command runs against the SDK (never its own API) and returns the lines to
+ * loop. Each command runs against the SDK (never its own API) and returns the lines to
  * show as a `└ …` result under the typed command. Kept small; the full `glyphh` CLI
  * remains the exhaustive surface — these are the in-chat conveniences.
+ *
+ * Model picks mirror the desktop composer: a loop declares model SLOTS, and a pick binds
+ * one to a model on THIS device (`setSelection`). Resolution — pick → loop default →
+ * platform default → first allowed — happens server-side (`loops.roles`), so what the
+ * footer shows and what a turn runs cannot drift apart.
  */
 
 import type { Client } from "@glyphh/client";
 import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
 import { switchModel } from "@glyphh/client/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
+import { selectionsFor, setSelection } from "./prefs.js";
 
 export interface CommandCtx {
   client: Client;
   account: Account | null;
-  rotor: string;
+  loop: string;
   version: string;
   server: string;
   setAccount: (a: Account | null) => void;
-  setRotor: (r: string) => void;
+  setLoop: (l: string) => void;
   clearChat: () => void;
   quit: () => void;
   /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
   emit: (lines: string[]) => void;
-  /** Reload the footer's model/config status (after a binding change). */
+  /** Reload the footer's model slots (after a selection change). */
   refreshConfig?: () => void;
   /** The per-process session id — anchors a mid-session model switch's overrides + audit. */
   sessionId: string;
-  /** Drop the cached model registry so the next turn re-resolves (after a session switch). */
+  /** Drop the cached model registry so the next turn re-resolves (after a selection switch). */
   invalidateModels?: () => void;
 }
 
@@ -42,6 +48,11 @@ export interface SlashCommand {
 
 function planLabel(tier: string): string {
   return tier.charAt(0).toUpperCase() + tier.slice(1);
+}
+
+/** Strip a catalog id's `provider::` prefix down to the bare model id for display. */
+function bareId(modelId: string): string {
+  return modelId.split("::").pop() ?? modelId;
 }
 
 const COMMANDS: SlashCommand[] = [
@@ -85,101 +96,106 @@ const COMMANDS: SlashCommand[] = [
       return [
         `signed in as ${a.email}`,
         `plan ${planLabel(a.tier)}${a.credits !== null ? ` · ${a.credits} credits` : ""}`,
-        `rotor ${ctx.rotor}  ·  ${ctx.server.replace(/^https?:\/\//, "")}`,
+        `loop ${ctx.loop}  ·  ${ctx.server.replace(/^https?:\/\//, "")}`,
       ];
     },
   },
   {
-    name: "rotor",
-    summary: "show or switch the selected rotor",
-    usage: "/rotor [name]",
-    run(ctx, args) {
-      const name = args[0];
-      if (!name) return [`current rotor: ${ctx.rotor}`];
-      ctx.setRotor(name);
-      return [`rotor set to ${name}`];
+    name: "loop",
+    aliases: ["loops"],
+    summary: "show or switch the selected loop",
+    usage: "/loop [slug]",
+    async run(ctx, args) {
+      const slug = args[0];
+      if (!slug) {
+        const { loops } = await ctx.client.loops.list().catch(() => ({ loops: [] }));
+        const lines = [`current loop: ${ctx.loop}`];
+        if (loops.length) {
+          lines.push("available:");
+          for (const l of loops) lines.push(`  ${l.slug}${l.slug === ctx.loop ? "  ← selected" : ""}  — ${l.name}`);
+          lines.push("switch:  /loop <slug>");
+        }
+        return lines;
+      }
+      ctx.setLoop(slug);
+      return [`loop set to ${slug}`];
     },
   },
   {
     name: "configure",
     aliases: ["config", "models"],
-    summary: "show the selected rotor's model roles + how they're bound",
+    summary: "show the selected loop's model slots + how each resolves",
     async run(ctx) {
-      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor).catch(() => null);
-      if (!rotor) return [`rotor "${ctx.rotor}" is not in the catalog`];
-      const binding = await ctx.client.rotorConfig.binding(ctx.rotor).catch(() => ({ roles: [] as { role: string; modelId: string; transport: string }[] }));
-      const bound = new Map(binding.roles.map((r) => [r.role, `${r.modelId} (${r.transport})`]));
-      const lines = [`${rotor.name} — ${rotor.roles.length} role(s):`];
-      for (const r of rotor.roles) lines.push(`  ${r.role}: ${bound.get(r.role) ?? "— unbound —"}  (needs: ${r.needs.join(", ")})`);
-      lines.push("bind with:  /bind <role>=<modelId>[:local]");
+      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => null);
+      if (!roles) return [`loop "${ctx.loop}" is not in the library`];
+      const lines = [`${ctx.loop} — ${roles.length} slot(s):`];
+      for (const r of roles) {
+        const model = r.modelId ? `${bareId(r.modelId)} (${r.source})` : "— none —";
+        lines.push(`  ${r.name}: ${model}${r.description ? `  · ${r.description}` : ""}`);
+      }
+      lines.push("pick a model:  /model <modelId>[:local]    slot:  /bind <slot>=<modelId>");
       return lines;
     },
   },
   {
     name: "bind",
-    summary: "bind a rotor role to a model: /bind <role>=<modelId>[:local]",
+    summary: "pick a model for a loop slot on this device: /bind <slot>=<modelId> …",
     async run(ctx, args) {
-      if (args.length === 0) return ["usage: /bind <role>=<modelId>[:local] …"];
-      const roles = args.map((p) => {
-        const [role, rest] = p.split("=");
-        if (!role || !rest) throw new Error(`bad pair: ${p}`);
-        const local = rest.endsWith(":local");
-        return { role, modelId: local ? rest.slice(0, -6) : rest, transport: (local ? "local" : "gateway") as "local" | "gateway" };
+      if (args.length === 0) return ["usage: /bind <slot>=<modelId> …  (this device's pick; resolved server-side)"];
+      const picks = args.map((p) => {
+        const [role, modelId] = p.split("=");
+        if (!role || !modelId) throw new Error(`bad pair: ${p}`);
+        return { role, modelId };
       });
-      await ctx.client.rotorConfig.setBinding(ctx.rotor, { roles });
-      ctx.setRotor(ctx.rotor); // invalidate the resolved-registry cache
+      for (const { role, modelId } of picks) setSelection(ctx.loop, role, modelId);
+      ctx.invalidateModels?.(); // next turn re-resolves with the new picks
       ctx.refreshConfig?.();
-      return ["binding saved", ...roles.map((r) => `  ${r.role} → ${r.modelId} (${r.transport})`)];
+      return ["selection saved", ...picks.map((p) => `  ${p.role} → ${bareId(p.modelId)}`)];
     },
   },
   {
     name: "model",
-    summary: "list models, or set the base model: /model <modelId>[:local]",
+    summary: "list models, or pick the loop's primary model: /model <modelId>[:local]",
     async run(ctx, args) {
-      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor);
-      const primary = rotor.roles[0]?.role ?? "assistant";
+      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => []);
+      const primary = roles[0]?.name ?? "default";
       if (args.length === 0) {
         const models = await ctx.client.catalog.models();
-        const lines = [`available models (bind "${primary}"):`];
+        const lines = [`available models (fills "${primary}"):`];
         for (const m of models) lines.push(`  ${m.id}  (${m.kind === "open_weight" ? "local" : "hosted"})`);
-        lines.push("set hosted:  /model <modelId>        local:  /model <modelId>:local");
+        lines.push("pick:  /model <modelId>        local:  /model <modelId>:local");
         return lines;
       }
       const raw = args[0]!;
       const local = raw.endsWith(":local");
       const modelId = local ? raw.slice(0, -6) : raw;
-      await ctx.client.rotorConfig.setBinding(ctx.rotor, {
-        roles: [{ role: primary, modelId, transport: local ? "local" : "gateway" }],
-      });
-      ctx.setRotor(ctx.rotor);
+      setSelection(ctx.loop, primary, modelId);
+      ctx.invalidateModels?.();
       ctx.refreshConfig?.();
-      return [`base model → ${modelId}${local ? " (local)" : ""}`];
+      return [`${primary} → ${bareId(modelId)}${local ? " (local)" : ""}`];
     },
   },
   {
     name: "use",
     aliases: ["switch"],
-    summary: "switch a model for THIS session only (transient, audited): /use <modelId> [role]",
+    summary: "switch a model for THIS session only (transient, audited): /use <modelId> [slot]",
     async run(ctx, args) {
-      if (args.length === 0) return ["usage: /use <modelId> [role]  — switch a model for this session (audited; /model persists it)"];
+      if (args.length === 0) return ["usage: /use <modelId> [slot]  — switch a model for this session (audited; /model persists it)"];
       const to = args[0]!;
-      const rotor = await ctx.client.rotorConfig.rotor(ctx.rotor);
-      const role = args[1] ?? rotor.roles[0]?.role ?? "assistant";
-      // The role's current bound model → the from→to audit trail.
-      const binding = await ctx.client.rotorConfig
-        .binding(ctx.rotor)
-        .catch(() => ({ roles: [] as { role: string; modelId: string }[] }));
-      const from = binding.roles.find((r) => r.role === role)?.modelId;
+      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => []);
+      const role = args[1] ?? roles[0]?.name ?? "default";
+      // The slot's current resolved model → the from→to audit trail.
+      const from = roles.find((r) => r.name === role)?.modelId;
       await switchModel(ctx.client, {
         sessionId: ctx.sessionId,
-        rotorSlug: ctx.rotor,
+        rotorSlug: ctx.loop,
         role,
         to,
         ...(from ? { from } : {}),
         surface: "cli",
       });
       ctx.invalidateModels?.(); // next turn re-resolves with the override
-      return [`switched ${role} → ${to} for this session (audited)`, from ? `  was ${from} · durable binding unchanged (/model persists)` : "  durable binding unchanged (/model persists)"];
+      return [`switched ${role} → ${to} for this session (audited)`, from ? `  was ${bareId(from)} · durable pick unchanged (/model persists)` : "  durable pick unchanged (/model persists)"];
     },
   },
   {
@@ -245,7 +261,7 @@ const COMMANDS: SlashCommand[] = [
 export const RELEASE_NOTES: string[] = [
   "Full-screen chat TUI over @glyphh/client",
   "Per-turn credits + duration on every answer",
-  "Slash commands: /login /status /rotor /help",
+  "Slash commands: /login /status /loop /help",
   "Shift+Tab cycles the permission mode",
 ];
 

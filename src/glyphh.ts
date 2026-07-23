@@ -3,7 +3,7 @@
  *
  * glyphh.ts — the TUI's single seam onto @glyphh/client. Builds a client bound to the
  * SAME on-disk session the `glyphh` CLI uses (~/.glyphh/session.json), loads who-am-I,
- * and opens a rotor session to stream turns. Every capability the TUI shows is an SDK
+ * and opens a loop session to stream turns. Every capability the TUI shows is an SDK
  * call — the TUI is a thin view, never its own API client.
  */
 
