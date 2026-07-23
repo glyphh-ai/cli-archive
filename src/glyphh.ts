@@ -36,11 +36,13 @@ export function serverUrl(): string {
   return "https://api.glyphh.ai";
 }
 
-/** A client sharing the CLI's persisted session. */
-export function makeClient(): Client {
+/** A client sharing the CLI's persisted session. `onSignedOut` fires when the
+ *  refresh chain dies (expired/revoked) — the TUI drops to the login gate. */
+export function makeClient(opts: { onSignedOut?: () => void } = {}): Client {
   return createClient({
     url: serverUrl(),
     tokenStore: new FileTokenStore(join(glyphhHome(), "session.json")),
+    ...(opts.onSignedOut ? { onSignedOut: opts.onSignedOut } : {}),
   });
 }
 

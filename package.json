@@ -22,8 +22,8 @@
     "@glyphh/client": "file:../sdk",
     "ink": "^5.0.1",
     "ink-spinner": "^5.0.0",
-    "rrotor": "file:../rrotor",
-    "react": "^18.3.1"
+    "react": "^18.3.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.126"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

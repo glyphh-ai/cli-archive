@@ -34,7 +34,10 @@ function leaveFullScreen(): void {
 }
 
 function main(): void {
-  const client = makeClient();
+  // The sign-out handler is LATE-BOUND: the client must exist before Boot renders,
+  // but Boot owns the reaction (drop to the login gate). Boot registers into this box.
+  const authLost: { handler?: () => void } = {};
+  const client = makeClient({ onSignedOut: () => authLost.handler?.() });
   enterFullScreen();
   let restored = false;
   const restore = () => {
@@ -46,7 +49,7 @@ function main(): void {
   process.on("exit", restore);
 
   const { waitUntilExit } = render(
-    <Boot client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} />,
+    <Boot client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} authLost={authLost} />,
   );
   waitUntilExit()
     .then(restore)

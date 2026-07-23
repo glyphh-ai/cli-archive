@@ -1,0 +1,261 @@
+/**
+ * @license Proprietary — © Glyphh. All rights reserved.
+ *
+ * agent.ts — THE DESKTOP AGENT, in CLI form. The same engine the desktop runs
+ * (`glyphh-agent.ts`), re-hosted in a terminal process:
+ *
+ *   • the Claude Agent SDK drives the loop (streaming partials, tool turns)
+ *   • every model call rides the SDK INTERCEPTOR → the metering gateway with the
+ *     caller's bearer (`startInterceptor` — the exact seam the desktop uses)
+ *   • the tool surface is the server's governed /mcp endpoint: platform tools,
+ *     the user's connections, and the attached desktop's tools (open apps,
+ *     layouts…) — the same surface, served by the same control plane
+ *   • the subprocess gets an app-owned CLAUDE_CONFIG_DIR so it can never ride a
+ *     personal ~/.claude login instead of the org's metered path
+ *
+ * The only thing that differs from the desktop is the renderer.
+ */
+
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Client } from "@glyphh/client";
+import { startInterceptor, type Interceptor } from "@glyphh/client/runtime";
+
+/** App-owned config home for the agent subprocess (never ~/.claude). */
+function agentConfigDir(): string {
+  const dir = join(process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh"), "agent-config");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// ── The interceptor: one per process, started lazily. ────────────────────────
+let interceptor: Interceptor | null = null;
+async function ensureInterceptor(client: Client): Promise<Interceptor> {
+  if (!interceptor) interceptor = await startInterceptor({ client });
+  return interceptor;
+}
+
+// ── The /mcp grant: an OAuth token (gy_mt_) minted headlessly with the user's
+//    session — register → consent → code → exchange, PKCE throughout. ─────────
+let grantCache: { server: string; token: string } | null = null;
+
+async function mintMcpGrant(client: Client, server: string): Promise<string> {
+  if (grantCache?.server === server) return grantCache.token;
+  const base = server.replace(/\/+$/, "");
+  const redirect = "http://127.0.0.1:1/callback"; // never followed — the code comes back in JSON
+  const verifier = randomBytes(48).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+
+  const reg = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Glyphh CLI", redirect_uris: [redirect] }),
+  }).then((r) => r.json() as Promise<{ client_id: string }>);
+
+  const consent = await fetch(`${base}/oauth/consent`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${await client.token()}` },
+    body: JSON.stringify({
+      client_id: reg.client_id,
+      redirect_uri: redirect,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      scope: "mcp",
+    }),
+  }).then((r) => r.json() as Promise<{ data?: { redirectTo?: string } }>);
+  const redirectTo = consent.data?.redirectTo;
+  const code = redirectTo ? new URL(redirectTo).searchParams.get("code") : null;
+  if (!code) throw new Error("mcp grant: consent returned no code");
+
+  const tok = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirect,
+      client_id: reg.client_id,
+      code_verifier: verifier,
+    }),
+  }).then((r) => r.json() as Promise<{ access_token?: string }>);
+  if (!tok.access_token) throw new Error("mcp grant: token exchange failed");
+
+  grantCache = { server, token: tok.access_token };
+  return tok.access_token;
+}
+
+/** Drop cached auth material (call when the session dies / rotates). */
+export function resetAgentAuth(): void {
+  grantCache = null;
+}
+
+// ── The turn ─────────────────────────────────────────────────────────────────
+
+export interface AgentTurnHandlers {
+  /** A streamed text delta — append to the live answer. */
+  onDelta: (text: string) => void;
+  /** The model called a tool (name is the bare tool name, input its args). */
+  onTool: (name: string, input: unknown) => void;
+  /** A tool finished; `content` is its (string-flattened, capped) result. */
+  onToolResult: (content: string, isError: boolean) => void;
+  /** Rough token progress for the live strip. */
+  onProgress?: (tokens: number) => void;
+}
+
+export interface AgentTurnOptions {
+  client: Client;
+  server: string;
+  /** Bare model id the loop resolved (the desktop's effectiveModel equivalent). */
+  model: string;
+  /** Prior turns, oldest first — assembled into the prompt like the desktop does. */
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  prompt: string;
+  cwd?: string;
+  /**
+   * The PERMISSION GATE — the TUI's equivalent of the desktop's approval cards.
+   * Called before every tool runs; resolve false to refuse it. Omitted = allow
+   * (server-side governance still applies to every call).
+   */
+  gate?: (tool: string, input: unknown) => Promise<boolean>;
+}
+
+const SYSTEM = [
+  "You are Glyphh, the user's agent. Answer directly and concisely.",
+  "You have tools: the user's Glyphh platform (apps, loops, skills, agents), their governed connections, and machine control on the user's attached machine — this CLI attaches as one, so desktop_native_app_open / desktop_native_apps_list / desktop_layout_open generally work right here.",
+  "When asked to open or control something, TRY the tool rather than assuming no machine is attached — the tool's own error will say if none is.",
+].join(" ");
+
+/** Assemble the per-run prompt the way the desktop does (persistSession is off —
+ *  each run carries its own recent history). */
+function assemblePrompt(history: AgentTurnOptions["history"], prompt: string): string {
+  if (!history.length) return prompt;
+  const recent = history.slice(-20);
+  const block = recent.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
+  return `<conversation so far>\n${block}\n</conversation so far>\n\n${prompt}`;
+}
+
+const cap = (s: string, n = 600): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** Flatten a tool_result content payload to displayable text. */
+function flattenResult(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (typeof b === "object" && b && (b as { type?: string }).type === "text" ? ((b as { text?: string }).text ?? "") : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return content == null ? "" : JSON.stringify(content);
+}
+
+/**
+ * Run ONE agent turn. Streams via handlers; resolves with the final text.
+ * Throws on a run-level failure (auth, spawn, provider) with a clean message.
+ */
+export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers): Promise<string> {
+  const { client, server, model, history, prompt, cwd } = opts;
+  const endpoint = await ensureInterceptor(client);
+  const grant = await mintMcpGrant(client, server);
+
+  let finalText = "";
+  let sawPartials = false;
+  let pendingSep = false;
+  let runError = "";
+  let lastProgressAt = 0;
+
+  const q = query({
+    prompt: assemblePrompt(history, prompt),
+    options: {
+      ...(cwd ? { cwd } : {}),
+      model,
+      systemPrompt: SYSTEM,
+      settingSources: [],
+      tools: [], // no built-ins — the glyphh surface is the whole toolset
+      mcpServers: {
+        glyphh: { type: "http", url: `${server.replace(/\/+$/, "")}/mcp`, headers: { authorization: `Bearer ${grant}` } },
+      },
+      // The gate decides per call (ask/auto/read-only in the TUI); server-side
+      // governance applies regardless. No gate = allow.
+      canUseTool: async (tool, input) => {
+        const ok = opts.gate ? await opts.gate(tool.replace(/^mcp__glyphh__/, ""), input) : true;
+        return ok
+          ? { behavior: "allow" as const, updatedInput: input }
+          : { behavior: "deny" as const, message: "The user declined this tool call." };
+      },
+      permissionMode: "default",
+      persistSession: false,
+      includePartialMessages: true,
+      env: {
+        ...process.env,
+        ANTHROPIC_BASE_URL: endpoint.url,
+        ANTHROPIC_API_KEY: endpoint.apiKey,
+        ANTHROPIC_AUTH_TOKEN: undefined,
+        CLAUDE_CONFIG_DIR: agentConfigDir(),
+        CLAUDE_CODE_USE_BEDROCK: undefined,
+        CLAUDE_CODE_USE_VERTEX: undefined,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        DISABLE_TELEMETRY: "1",
+      },
+    },
+  });
+
+  for await (const msg of q as AsyncIterable<SDKMessage>) {
+    if (msg.type === "stream_event") {
+      const ev = (msg as unknown as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
+      if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+        sawPartials = true;
+        if (pendingSep && finalText) {
+          finalText += "\n\n";
+          h.onDelta("\n\n");
+        }
+        pendingSep = false;
+        finalText += ev.delta.text;
+        h.onDelta(ev.delta.text);
+        const now = Date.now();
+        if (now - lastProgressAt > 400) {
+          lastProgressAt = now;
+          h.onProgress?.(Math.ceil(finalText.length / 4));
+        }
+      }
+    } else if (msg.type === "assistant") {
+      const blocks = msg.message.content as Array<{ type: string; text?: string; name?: string; input?: unknown }>;
+      for (const b of blocks) {
+        if (b.type === "tool_use" && b.name) {
+          h.onTool(b.name.replace(/^mcp__glyphh__/, ""), b.input);
+        }
+      }
+      const text = blocks.filter((b) => b.type === "text").map((b) => b.text || "").join("");
+      if (text) {
+        if (sawPartials) {
+          pendingSep = true; // streamed already — next turn's first token gets the break
+        } else {
+          finalText = finalText ? `${finalText}\n\n${text}` : text;
+          h.onDelta(finalText === text ? text : `\n\n${text}`);
+        }
+      }
+    } else if (msg.type === "user") {
+      // Tool results come back as user messages carrying tool_result blocks.
+      const blocks = (msg as unknown as { message?: { content?: unknown } }).message?.content;
+      if (Array.isArray(blocks)) {
+        for (const b of blocks as Array<{ type?: string; content?: unknown; is_error?: boolean }>) {
+          if (b.type === "tool_result") h.onToolResult(cap(flattenResult(b.content)), Boolean(b.is_error));
+        }
+      }
+    } else if (msg.type === "result") {
+      const r = msg as { subtype: string; result?: string };
+      if (r.subtype === "success") {
+        if (!finalText && r.result) {
+          finalText = r.result;
+          h.onDelta(finalText);
+        }
+      } else {
+        runError = `run ended: ${r.subtype.replaceAll("_", " ")}`;
+      }
+    }
+  }
+  if (runError) throw new Error(runError);
+  return finalText;
+}

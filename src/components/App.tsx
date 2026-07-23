@@ -9,18 +9,18 @@
  * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
  * scroll, tab enters BROWSE mode (walk step receipts, enter unfolds one,
  * ctrl+o unfolds all — retroactively, because lines regenerate from items).
- * A leading `/` runs a slash command; plain text streams a loop turn whose
- * steps land as collapsible receipts and whose answer lands as the `●` line.
+ * A leading `/` runs a slash command; plain text runs ONE AGENT TURN (the
+ * desktop's engine): tool calls land as collapsible receipts, the answer
+ * streams into the `●` line.
  * All capability comes from the SDK — nothing here talks to an API directly.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import type { Client } from "@glyphh/client";
-import type { BasicModelsOptions } from "rrotor";
-import { localTurn } from "../local-runtime.js";
-// The governed model bridge lives in the SDK — every client resolves the same way.
-import { resolveModels, sessionOverrides } from "@glyphh/client/runtime";
+import { runAgentTurn } from "../agent.js";
+// Live model switches (/use) audit + layer in via the SDK override store.
+import { sessionOverrides } from "@glyphh/client/runtime";
 import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
 import { Header } from "./Header.js";
 import { InputBar } from "./InputBar.js";
@@ -30,7 +30,6 @@ import { TranscriptLine } from "./TranscriptLine.js";
 import { theme, applyTheme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { runSlash, RELEASE_NOTES, type CommandCtx } from "../commands.js";
-import { stepDetails } from "../receipts.js";
 import {
   answerLines,
   cardLines,
@@ -41,7 +40,7 @@ import {
   userLines,
   type Line,
 } from "../lines.js";
-import type { ChatTurn, Item, PermissionMode, TurnStep } from "../types.js";
+import type { ChatTurn, Item, PermissionMode } from "../types.js";
 
 const MODES: PermissionMode[] = ["ask", "auto", "plan", "read-only"];
 
@@ -55,6 +54,9 @@ const VERBS: Array<{ ing: string; past: string }> = [
   { ing: "Simmering", past: "Simmered" },
   { ing: "Churning", past: "Churned" },
 ];
+
+/** Most recent turns sent to the model — bounds the wire, not the transcript. */
+const HISTORY_CAP = 40;
 
 /** Omit that distributes over a union (plain Omit collapses discriminants). */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -102,14 +104,21 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const [, setThemeVersion] = useState(0);
 
   const nextId = useRef(0);
-  const lastStepAt = useRef(0);
   const turnStartedAt = useRef(0);
   const inputRef = useRef("");
   const headerBox = useRef<DOMElement | null>(null);
   const stripBox = useRef<DOMElement | null>(null);
-  // The resolved model registry, cached per loop (re-resolved when the loop changes).
-  const modelsCache = useRef<BasicModelsOptions | undefined>(undefined);
-  const modelsForLoop = useRef<string | null>(null);
+  // The loop's resolved primary model (bare id), cached per loop.
+  const modelRef = useRef<{ loop: string | null; id: string | null }>({ loop: null, id: null });
+  // The conversation the model sees — user/assistant turns, capped for the wire.
+  const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  /** A pending tool approval (ask mode): the strip prompts, y/n/a answers. */
+  const [gatePending, setGatePending] = useState<{ tool: string } | null>(null);
+  const gateResolve = useRef<((ok: boolean) => void) | null>(null);
+  /** Tools the user answered "a"lways for — auto-allowed for this session. */
+  const sessionAllowed = useRef<Set<string>>(new Set());
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   // A stable per-process id so a mid-session model switch's overrides + audit key together.
   const sessionId = useRef<string>(`cli-${Date.now().toString(36)}-${process.pid}`);
 
@@ -188,7 +197,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   }, []);
 
   const setLoop = useCallback((l: string) => {
-    modelsForLoop.current = null; // re-resolve the binding for the new loop
+    modelRef.current = { loop: null, id: null }; // re-resolve for the new loop
     setLoopState(l);
     writePrefs({ loop: l });
   }, []);
@@ -207,19 +216,40 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       kind: "card",
       title: who ? `Welcome back, ${who}` : "Welcome to Glyphh",
       body: [
-        "Every line you type is one full loop turn: deterministic steps, streamed live as receipts.",
-        "tab browses/unfolds steps · ctrl+o unfolds all · shift+tab cycles permission mode",
+        "The Glyphh agent — the same engine as the desktop, in your terminal. Answers stream live; tool calls (apps, connections, your desktop) land as receipts.",
+        "tab browses/unfolds receipts · ctrl+o unfolds all · shift+tab cycles permission mode",
         "/help for commands · /theme to restyle · /loop to switch loops",
       ],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** Tool names that only read — permitted without asking in read-only mode. */
+  const READ_TOOL = /^(list|get|read|find|search|status|browse|desktop_panels_list|desktop_native_apps_list)/;
+
+  /** The permission gate, per the mode chip: auto allows, plan refuses (the model
+   *  plans without executing), read-only allows read tools and refuses the rest,
+   *  ask prompts in the strip (y allows once, a allows for the session, n refuses). */
+  const gateTool = useCallback((tool: string): Promise<boolean> => {
+    const m = modeRef.current;
+    if (m === "auto") return Promise.resolve(true);
+    if (m === "plan") return Promise.resolve(false);
+    if (sessionAllowed.current.has(tool)) return Promise.resolve(true);
+    if (m === "read-only") return Promise.resolve(READ_TOOL.test(tool));
+    return new Promise<boolean>((resolve) => {
+      gateResolve.current = (ok) => {
+        gateResolve.current = null;
+        setGatePending(null);
+        resolve(ok);
+      };
+      setGatePending({ tool });
+    });
+  }, []);
+
   const runTurn = useCallback(
     async (prompt: string) => {
       const startedAt = Date.now();
       turnStartedAt.current = startedAt;
-      lastStepAt.current = startedAt;
       setElapsed(0);
       setVerb(VERBS[nextId.current % VERBS.length]!);
       push({ kind: "user", text: prompt });
@@ -236,61 +266,92 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       setLast({ ...turn });
       setBusy(true);
       try {
-        // Resolve the loop's slot→model binding once per loop (gateway models get the
-        // caller's bearer; local models are served on demand by llama). Unbound → stub.
-        // This device's per-loop picks layer in as overrides — the same picks `loops.roles`
-        // feeds the footer — and a live `/use` switch wins over both.
-        if (modelsForLoop.current !== loop) {
-          try {
-            modelsCache.current = await resolveModels(client, {
-              rotorSlug: loop,
-              token: await client.token(),
-              overrides: { ...selectionsFor(loop), ...sessionOverrides(sessionId.current, loop) },
-            });
-          } catch {
-            modelsCache.current = undefined;
-          }
-          modelsForLoop.current = loop;
+        // THE DESKTOP'S PATH, exactly: the model comes from `loops.roles` (the same
+        // call the footer chip reads, so the chip and the run agree by construction),
+        // and the turn STREAMS over the gateway's Messages edge with the caller's
+        // bearer — token deltas render as they arrive. This device's per-loop picks
+        // layer in as selections; a live `/use` switch wins.
+        if (modelRef.current.loop !== loop) {
+          const roles = await client.loops.roles(loop, {
+            ...selectionsFor(loop),
+            ...sessionOverrides(sessionId.current, loop),
+          });
+          const id = roles.find((r) => r.modelId)?.modelId ?? null;
+          modelRef.current = { loop, id: id ? (id.includes("::") ? id.slice(id.indexOf("::") + 2) : id) : null };
         }
-        // Run against the ONE local runtime, in-process (openrotor linked as a library;
-        // memory in the shared SQLite stator). Remote sessions are a separate path.
-        const run = localTurn(
-          prompt,
-          modelsCache.current ? { models: modelsCache.current, session: sessionId.current } : { session: sessionId.current },
-        );
-        for await (const ev of run.events) {
-          if (ev.kind === "step") {
-            const now = Date.now();
-            const secs = (now - lastStepAt.current) / 1000;
-            lastStepAt.current = now;
-            const up = ev.usage?.input ?? 0;
-            const down = ev.usage?.output ?? 0;
-            const step: TurnStep = {
-              label: ev.display?.label ?? ev.step_id,
-              ok: !ev.error && ev.status !== "failed",
-              ...(secs >= 0.1 ? { secs } : {}),
-              ...(up + down > 0 ? { tokens: { up, down } } : {}),
-              details: stepDetails(ev.output),
-              ...(ev.error ? { error: ev.error } : {}),
-            };
-            turn.tokensUp += up;
-            turn.tokensDown += down;
-            turn.stubbed = turn.stubbed || ev.frames.includes("stub");
-            turn.degraded = turn.degraded || ev.frames.includes("degrade");
-            setLast({ ...turn });
-            push({ kind: "section", step });
-          } else if (ev.kind === "answer") {
-            turn.text = ev.text;
-            if (ev.text) push({ kind: "answer", text: ev.text });
-          } else if (ev.kind === "error") {
-            turn.text = `${ev.code}: ${ev.detail}`;
-            turn.status = "error";
-            push({ kind: "answer", text: turn.text });
-          }
-        }
-        const result = await run.done;
-        if (turn.status !== "error") {
-          turn.status = result.status === "error" || result.error ? "error" : result.status === "refused" ? "refused" : "done";
+        if (!modelRef.current.id) {
+          turn.status = "error";
+          turn.text = "No model available for this loop — pick one with /use, or switch loops with /loop.";
+          push({ kind: "note", text: turn.text });
+        } else {
+          // CHRONOLOGICAL segments: text streams into the item at the BOTTOM of
+          // the transcript; every tool receipt closes the segment, so post-tool
+          // text opens a fresh ● below the receipts — work reads in order.
+          let segId: string | null = null;
+          let segText = "";
+          let text = "";
+          let pendingTool: string | null = null;
+          const finalText = await runAgentTurn(
+            {
+              client,
+              server,
+              model: modelRef.current.id,
+              history: history.current.slice(-HISTORY_CAP),
+              prompt,
+              cwd: process.cwd(),
+              gate: (tool) => gateTool(tool),
+            },
+            {
+              onDelta: (t) => {
+                text += t;
+                if (!segId) {
+                  segText = t.replace(/^\s+/, "");
+                  if (!segText) return; // a bare separator between turns — wait for content
+                  segId = push({ kind: "answer", text: segText });
+                  return;
+                }
+                segText += t;
+                const id = segId;
+                patchItem(id, (it) => ({ ...it, text: segText }) as Item);
+              },
+              // A tool call lands as a ⏺ receipt; its result folds in beneath.
+              onTool: (name, input) => {
+                segId = null; // next text lands BELOW this receipt
+                pendingTool = name;
+                const args = input ? JSON.stringify(input) : "";
+                push({
+                  kind: "section",
+                  step: { label: name, ok: true, details: args && args !== "{}" ? [args.length > 100 ? `${args.slice(0, 99)}…` : args] : [] },
+                });
+              },
+              onToolResult: (content, isError) => {
+                segId = null;
+                const label = pendingTool ?? "tool";
+                pendingTool = null;
+                if (content || isError) {
+                  push({
+                    kind: "section",
+                    step: {
+                      label: `${label} → ${isError ? "error" : "result"}`,
+                      ok: !isError,
+                      details: content ? content.split("\n").slice(0, 12) : [],
+                      ...(isError ? { error: "tool error" } : {}),
+                    },
+                  });
+                }
+              },
+              onProgress: (tokens) => {
+                turn.tokensDown = tokens;
+                setLast({ ...turn });
+              },
+            },
+          );
+          text = finalText || text;
+          turn.text = text;
+          if (!text.trim()) push({ kind: "note", text: "(no answer text — the run ended after tool calls)" });
+          history.current.push({ role: "user", content: prompt });
+          history.current.push({ role: "assistant", content: text || "…" });
+          if (turn.status !== "error") turn.status = "done";
         }
         turn.durationMs = Date.now() - startedAt;
         setLast({ ...turn });
@@ -327,6 +388,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         setLoop,
         setTheme,
         clearChat: () => {
+          history.current = [];
           setItems([]);
           setFolds({});
           setSelId(null);
@@ -338,7 +400,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         refreshConfig: () => setConfigVersion((v) => v + 1),
         sessionId: sessionId.current,
         invalidateModels: () => {
-          modelsForLoop.current = null;
+          modelRef.current = { loop: null, id: null };
         },
       };
       const result = await runSlash(ctx, line);
@@ -416,6 +478,16 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   }, [folds, selId, uiMode, anchors, ensureVisible]);
 
   useInput((ch, key) => {
+    // A pending tool approval owns the keyboard: y allows once, a allows the
+    // tool for the session, n/esc refuses. Everything else is swallowed.
+    if (gatePending) {
+      if (ch === "y" || key.return) gateResolve.current?.(true);
+      else if (ch === "a") {
+        sessionAllowed.current.add(gatePending.tool);
+        gateResolve.current?.(true);
+      } else if (ch === "n" || key.escape) gateResolve.current?.(false);
+      return;
+    }
     if (key.ctrl && ch === "o") {
       setExpanded((e) => !e);
       setFolds({});
@@ -536,6 +608,11 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       ) : null}
       <Box flexDirection="column" ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
+        {gatePending ? (
+          <Text color={theme.accent} wrap="truncate-end">
+            {`  ⏸ ${gatePending.tool} — allow? (y)es once · (a)lways this session · (n)o`}
+          </Text>
+        ) : null}
         <InputBar width={cols} value={input} busy={busy} />
         <Footer width={cols} permissionMode={mode} loop={loop} slots={slots} />
       </Box>

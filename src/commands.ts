@@ -16,6 +16,7 @@ import type { Client } from "@glyphh/client";
 import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
 import { switchModel } from "@glyphh/client/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
+import { openBrowser } from "./open-browser.js";
 import { readPrefs, selectionsFor, setSelection } from "./prefs.js";
 import { THEMES, DEFAULT_THEME } from "./theme.js";
 
@@ -64,11 +65,20 @@ const COMMANDS: SlashCommand[] = [
     aliases: ["auth", "signin"],
     summary: "sign in from this terminal (approve in a browser)",
     async run(ctx) {
-      // Device authorization grant: show a code + URL, then poll until approved.
+      // Device authorization grant — SAME flow as the boot login screen: open the
+      // browser straight to the approval page (code embedded in the URL), and show
+      // the code + URL only as the fallback for a box that can't open a browser.
       ctx.emit(["starting device login…"]);
       await ctx.client.auth.deviceLogin({
-        onPrompt: (p) =>
-          ctx.emit([`open  ${p.verificationUri}`, `enter code  ${p.userCode}`, "waiting for approval…"]),
+        onPrompt: (p) => {
+          const url = p.verificationUriComplete || p.verificationUri;
+          const opened = openBrowser(url);
+          ctx.emit(
+            opened
+              ? ["browser opened — approve there to sign in", `code ${p.userCode} (if the page asks)`, "waiting for approval…"]
+              : [`open  ${url}`, `enter code  ${p.userCode}`, "waiting for approval…"],
+          );
+        },
       });
       const account = await loadAccount(ctx.client);
       ctx.setAccount(account);

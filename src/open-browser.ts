@@ -19,6 +19,9 @@ function opener(): { cmd: string; args: string[] } {
 /** Open `url` in the default browser. Returns whether the opener spawned (not whether a
  *  browser actually appeared) — callers treat false as "show the URL and move on". */
 export function openBrowser(url: string): boolean {
+  // Scripted/CI runs must never pop the user's browser (a headless test loop
+  // launching the login gate repeatedly = surprise tabs on someone's machine).
+  if (process.env.GLYPHH_NO_BROWSER) return false;
   try {
     const { cmd, args } = opener();
     const child = spawn(cmd, [...args, url], { stdio: "ignore", detached: true });

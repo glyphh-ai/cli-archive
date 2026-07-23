@@ -19,6 +19,8 @@ import { ThemePicker } from "./ThemePicker.js";
 import { readPrefs, writePrefs } from "../prefs.js";
 import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
+import { resetAgentAuth } from "../agent.js";
+import { startMachineHost, stopMachineHost } from "../machine-host.js";
 
 export interface BootProps {
   client: Client;
@@ -26,16 +28,22 @@ export interface BootProps {
   server: string;
   cwd: string;
   loop: string;
+  /** The late-bound box main.tsx gave the client's onSignedOut — Boot registers the
+   *  reaction here: when the refresh chain dies MID-SESSION, drop to the login gate. */
+  authLost?: { handler?: () => void };
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, loop }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, loop, authLost }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
   const [phase, setPhase] = useState<Phase>("loading");
   const [account, setAccount] = useState<Account | null>(null);
+  // Bumped on every re-auth: keys the App so a new session starts a FRESH chat —
+  // the old transcript belonged to a dead session and its caches (models, ids) with it.
+  const [epoch, setEpoch] = useState(0);
 
   // Where to go once a session exists: the theme picker on first run, else straight to chat.
   const afterAuth = useCallback((): Phase => (readPrefs().theme ? "chat" : "theme"), []);
@@ -46,6 +54,7 @@ export function Boot({ client, version, server, cwd, loop }: BootProps): React.R
     void loadAccount(client).then((a) => {
       if (cancelled) return;
       setAccount(a);
+      if (a) startMachineHost(client, server, version);
       setPhase(a ? afterAuth() : "login");
     });
     return () => {
@@ -53,9 +62,26 @@ export function Boot({ client, version, server, cwd, loop }: BootProps): React.R
     };
   }, [client, afterAuth]);
 
+  // Session death (expired/revoked refresh) → the login gate, from anywhere.
+  useEffect(() => {
+    if (!authLost) return;
+    authLost.handler = () => {
+      resetAgentAuth(); // the /mcp grant + interceptor bearer died with the session
+      stopMachineHost();
+      setAccount(null);
+      setPhase("login");
+    };
+    return () => {
+      delete authLost.handler;
+    };
+  }, [authLost]);
+
   const onAuthed = useCallback(() => {
+    resetAgentAuth(); // fresh session → fresh grant on the next turn
     void loadAccount(client).then((a) => {
       setAccount(a);
+      if (a) startMachineHost(client, server, version);
+      setEpoch((e) => e + 1);
       setPhase(afterAuth());
     });
   }, [client, afterAuth]);
@@ -77,6 +103,6 @@ export function Boot({ client, version, server, cwd, loop }: BootProps): React.R
   if (phase === "login") return <Login client={client} onAuthed={onAuthed} />;
   if (phase === "theme") return <ThemePicker current={readPrefs().theme} onPick={onPickTheme} />;
   return (
-    <App client={client} version={version} server={server} cwd={cwd} loop={loop} initialAccount={account} />
+    <App key={epoch} client={client} version={version} server={server} cwd={cwd} loop={loop} initialAccount={account} />
   );
 }
