@@ -15,6 +15,9 @@ import { InputBar } from "../src/components/InputBar.js";
 import { Footer } from "../src/components/Footer.js";
 import { SubFooter } from "../src/components/SubFooter.js";
 import { TranscriptLine } from "../src/components/TranscriptLine.js";
+import { ThemePicker } from "../src/components/ThemePicker.js";
+import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
+import { openBrowser } from "../src/open-browser.js";
 import { CAT_ROWS } from "../src/banner.js";
 import { answerLines, commandLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
@@ -155,5 +158,38 @@ describe("status strip", () => {
       <SubFooter width={100} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
     ).lastFrame()!;
     expect(frame).toContain("stub answered");
+  });
+});
+
+describe("themes", () => {
+  it("has a dark default and swaps the live palette in place", () => {
+    expect(DEFAULT_THEME).toBe("dark");
+    const dark = themeByName("dark").colors;
+    const light = themeByName("light").colors;
+    expect(dark.text).not.toBe(light.text);
+
+    applyTheme("light");
+    expect(theme.text).toBe(light.text); // the shared object mutated in place
+    const restored = applyTheme("dark"); // leave the module in its default for other tests
+    expect(restored.name).toBe("dark");
+    expect(theme.text).toBe(dark.text);
+  });
+
+  it("an unknown theme name falls back to the default", () => {
+    expect(themeByName("nope").name).toBe("dark");
+  });
+
+  it("the picker lists every theme and marks the current one", () => {
+    const frame = render(<ThemePicker current="claude" onPick={() => {}} />).lastFrame()!;
+    for (const t of THEMES) expect(frame).toContain(t.label);
+    expect(frame).toContain("Choose your theme");
+    expect(frame).toContain("▸"); // a selection marker is drawn
+    applyTheme("dark"); // the picker previews the current theme — reset for isolation
+  });
+});
+
+describe("open browser", () => {
+  it("returns a boolean and never throws", () => {
+    expect(typeof openBrowser("https://glyphh.ai/device")).toBe("boolean");
   });
 });

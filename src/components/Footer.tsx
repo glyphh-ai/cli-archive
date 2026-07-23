@@ -41,8 +41,8 @@ function Slot({ slot, solo }: { slot: FooterSlot; solo: boolean }): React.ReactE
   const set = slot.model !== null;
   return (
     <Text>
-      {solo ? null : <Text color={theme.gray}>{slot.label} </Text>}
-      <Text color={set ? theme.purple : theme.dim}>{slot.model ?? "not set"}</Text>
+      {solo ? null : <Text color={theme.muted}>{slot.label} </Text>}
+      <Text color={set ? theme.accent : theme.faint}>{slot.model ?? "not set"}</Text>
     </Text>
   );
 }
@@ -51,21 +51,21 @@ export function Footer({ width, permissionMode, loop, slots }: FooterProps): Rea
   const solo = slots.length === 1;
   return (
     <Box width={width} paddingX={1} justifyContent="space-between">
-      <Text color={theme.gray}>{MODE_GLYPH[permissionMode]}</Text>
+      <Text color={theme.muted}>{MODE_GLYPH[permissionMode]}</Text>
       <Box>
         {slots.length === 0 ? (
-          <Text color={theme.dim}>no model</Text>
+          <Text color={theme.faint}>no model</Text>
         ) : (
           slots.map((s, i) => (
             <React.Fragment key={s.label}>
-              {i > 0 ? <Text color={theme.dim}> · </Text> : null}
+              {i > 0 ? <Text color={theme.faint}> · </Text> : null}
               <Slot slot={s} solo={solo} />
             </React.Fragment>
           ))
         )}
-        <Text color={theme.dim}>{"   ·   "}</Text>
-        <Text color={theme.gray}>loop </Text>
-        <Text color={theme.purple}>{loop}</Text>
+        <Text color={theme.faint}>{"   ·   "}</Text>
+        <Text color={theme.muted}>loop </Text>
+        <Text color={theme.accent}>{loop}</Text>
       </Box>
     </Box>
   );

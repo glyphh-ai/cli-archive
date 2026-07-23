@@ -18,23 +18,23 @@ export interface InputBarProps {
 
 export function InputBar({ width, value, busy }: InputBarProps): React.ReactElement {
   const hasText = value.trim().length > 0;
-  const accent = busy ? theme.dim : hasText ? theme.purple : theme.gray;
+  const accent = busy ? theme.faint : hasText ? theme.accent : theme.muted;
   const button = busy ? "  …  " : " Send ⏎ ";
 
   return (
     <Box
       width={width}
       borderStyle="single"
-      borderColor={busy ? theme.dim : hasText ? theme.purple : theme.gray}
+      borderColor={busy ? theme.faint : hasText ? theme.accent : theme.muted}
       paddingX={1}
       justifyContent="space-between"
     >
       <Box>
-        <Text color={theme.purple}>{"› "}</Text>
-        {value ? <Text color={theme.white}>{value}</Text> : <Text color={theme.dim}>type a message</Text>}
-        {!busy ? <Text color={theme.purple}>▍</Text> : null}
+        <Text color={theme.accent}>{"› "}</Text>
+        {value ? <Text color={theme.text}>{value}</Text> : <Text color={theme.faint}>type a message</Text>}
+        {!busy ? <Text color={theme.accent}>▍</Text> : null}
       </Box>
-      <Text backgroundColor={accent} color={theme.white}>
+      <Text backgroundColor={accent} color={theme.text}>
         {button}
       </Text>
     </Box>

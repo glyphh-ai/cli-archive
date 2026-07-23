@@ -31,11 +31,11 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
     return (
       <Box width={width} paddingX={1} flexDirection="column">
         <Text>
-          <Text color={theme.purple}>
+          <Text color={theme.accent}>
             <Spinner type="dots" />
           </Text>
-          <Text color={theme.gray}> {verb.ing}… </Text>
-          <Text color={theme.dim}>
+          <Text color={theme.muted}> {verb.ing}… </Text>
+          <Text color={theme.faint}>
             ({elapsed.toFixed(1)}s{burn})
           </Text>
         </Text>
@@ -51,7 +51,7 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
     if (last.status === "error") cost.push("failed");
     return (
       <Box width={width} paddingX={1} flexDirection="column">
-        <Text color={theme.dim} wrap="truncate-end">
+        <Text color={theme.faint} wrap="truncate-end">
           ✻ {cost.join(" · ")}
           {last.stubbed ? "  ⚠ no model bound — stub answered (/configure)" : ""}
           {last.degraded ? "  ⚠ lane degraded (unfold the step detail)" : ""}

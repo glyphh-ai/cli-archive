@@ -11,7 +11,7 @@
 import "./env.js"; // MUST be first — loads .env before anything reads the environment
 import { homedir } from "node:os";
 import { render } from "ink";
-import { App } from "./components/App.js";
+import { Boot } from "./components/Boot.js";
 import { makeClient, serverUrl } from "./glyphh.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
@@ -46,7 +46,7 @@ function main(): void {
   process.on("exit", restore);
 
   const { waitUntilExit } = render(
-    <App client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} />,
+    <Boot client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} />,
   );
   waitUntilExit()
     .then(restore)

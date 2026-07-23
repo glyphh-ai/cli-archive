@@ -27,7 +27,7 @@ import { InputBar } from "./InputBar.js";
 import { Footer, type FooterSlot } from "./Footer.js";
 import { SubFooter } from "./SubFooter.js";
 import { TranscriptLine } from "./TranscriptLine.js";
-import { theme } from "../theme.js";
+import { theme, applyTheme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { runSlash, RELEASE_NOTES, type CommandCtx } from "../commands.js";
 import { stepDetails } from "../receipts.js";
@@ -65,15 +65,17 @@ export interface AppProps {
   server: string;
   cwd: string;
   loop: string;
+  /** The session already resolved by the boot gate — seeds the header without a flash. */
+  initialAccount?: Account | null;
 }
 
-export function App({ client, version, server, cwd, loop: initialLoop }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, loop: initialLoop, initialAccount }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
   const [cols, setCols] = useState(stdout.columns || 80);
   const [rows, setRows] = useState(stdout.rows || 24);
-  const [account, setAccount] = useState<Account | null>(null);
+  const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,6 +97,9 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
   // Footer status: the loop's resolved model slots (empty while loading / offline).
   const [slots, setSlots] = useState<FooterSlot[]>([]);
   const [configVersion, setConfigVersion] = useState(0); // bump to reload after a pick
+  // Setter-only: calling it re-renders the tree so render-time reads of the mutated
+  // `theme` palette repaint. The value itself is never read.
+  const [, setThemeVersion] = useState(0);
 
   const nextId = useRef(0);
   const lastStepAt = useRef(0);
@@ -122,6 +127,13 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
   useEffect(() => {
     void loadAccount(client).then(setAccount);
   }, [client]);
+
+  // Apply the saved theme on mount — the boot gate sets it too, but this keeps the App
+  // self-contained (e.g. launched directly in a test) and never paints the wrong palette.
+  useEffect(() => {
+    applyTheme(readPrefs().theme);
+    setThemeVersion((v) => v + 1);
+  }, []);
 
   useEffect(() => {
     if (!busy) return;
@@ -181,15 +193,23 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
     writePrefs({ loop: l });
   }, []);
 
-  // Welcome card — mount-only by design.
+  const setTheme = useCallback((name: string) => {
+    applyTheme(name);
+    writePrefs({ theme: name });
+    setThemeVersion((v) => v + 1); // repaint the whole tree in the new palette
+  }, []);
+
+  // Welcome card — mount-only by design. Greets the signed-in user (the boot gate has
+  // already resolved the session) inside a bordered card at the top of the transcript.
   useEffect(() => {
+    const who = account?.name ?? account?.email?.split("@")[0];
     push({
       kind: "card",
-      title: "Glyphh",
+      title: who ? `Welcome back, ${who}` : "Welcome to Glyphh",
       body: [
         "Every line you type is one full loop turn: deterministic steps, streamed live as receipts.",
         "tab browses/unfolds steps · ctrl+o unfolds all · shift+tab cycles permission mode",
-        "/help for commands · /login to sign in · /loop to switch loops",
+        "/help for commands · /theme to restyle · /loop to switch loops",
       ],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -305,6 +325,7 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
         server,
         setAccount,
         setLoop,
+        setTheme,
         clearChat: () => {
           setItems([]);
           setFolds({});
@@ -323,7 +344,7 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, exit, patchItem, push, loop, server, setLoop, version],
+    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version],
   );
 
   const submit = useCallback(() => {
@@ -505,13 +526,13 @@ export function App({ client, version, server, cwd, loop: initialLoop }: AppProp
       </Box>
       <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="hidden">
         {visible.length === 0 ? (
-          <Text color={theme.dim}>Ask Glyphh anything, or type /help. Ctrl+C to quit.</Text>
+          <Text color={theme.faint}>Ask Glyphh anything, or type /help. Ctrl+C to quit.</Text>
         ) : (
           visible.map((l, i) => <TranscriptLine key={`${start + i}`} line={l} />)
         )}
       </Box>
       {clampedScroll > 0 ? (
-        <Text color={theme.dim}>{`  ↓ ${clampedScroll} lines below · ↑/↓ scrolls · pgdn returns`}</Text>
+        <Text color={theme.faint}>{`  ↓ ${clampedScroll} lines below · ↑/↓ scrolls · pgdn returns`}</Text>
       ) : null}
       <Box flexDirection="column" ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />

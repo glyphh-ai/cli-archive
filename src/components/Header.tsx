@@ -28,9 +28,9 @@ function TopEdge({ width, version }: { width: number; version: string }): React.
   const inner = Math.max(0, width - 2);
   const trailing = Math.max(0, inner - 3 - label.length);
   return (
-    <Text color={theme.dim}>
+    <Text color={theme.faint}>
       {"┌─ "}
-      <Text color={theme.purple} bold>
+      <Text color={theme.accent} bold>
         {label}
       </Text>
       {" " + "─".repeat(trailing) + "┐"}
@@ -45,33 +45,35 @@ function planLabel(tier: string): string {
 function LeftPanel({ account, cwd }: { account: Account | null; cwd: string }): React.ReactElement {
   return (
     <Box flexDirection="column" width="25%" flexShrink={0} alignItems="center" paddingX={1}>
-      <Text color={theme.white}>{CAT_ROWS.join("\n")}</Text>
+      <Text color={theme.text} bold>
+        {CAT_ROWS.join("\n")}
+      </Text>
       <Box flexDirection="column" alignItems="center" marginTop={1}>
         {account ? (
           <>
-            <Text color={theme.white} bold wrap="truncate-end">
+            <Text color={theme.text} bold wrap="truncate-end">
               {account.name ?? account.email}
             </Text>
-            <Text color={theme.gray} wrap="truncate-end">
-              <Text color={theme.purple}>{planLabel(account.tier)}</Text>
+            <Text color={theme.muted} wrap="truncate-end">
+              <Text color={theme.accent}>{planLabel(account.tier)}</Text>
               {account.credits !== null ? ` · ${account.credits} credits` : ""}
             </Text>
-            <Text color={theme.gray} wrap="truncate-end">
+            <Text color={theme.muted} wrap="truncate-end">
               {account.email}
             </Text>
-            <Text color={theme.dim} wrap="truncate-start">
+            <Text color={theme.faint} wrap="truncate-start">
               {cwd}
             </Text>
           </>
         ) : (
           <>
-            <Text color={theme.gray} wrap="truncate-end">
+            <Text color={theme.muted} wrap="truncate-end">
               not signed in
             </Text>
-            <Text color={theme.dim} wrap="truncate-end">
+            <Text color={theme.faint} wrap="truncate-end">
               /login to sign in
             </Text>
-            <Text color={theme.dim} wrap="truncate-start">
+            <Text color={theme.faint} wrap="truncate-start">
               {cwd}
             </Text>
           </>
@@ -90,20 +92,20 @@ function NotesPanel({ notes }: { notes: string[] }): React.ReactElement {
       borderTop={false}
       borderBottom={false}
       borderRight={false}
-      borderColor={theme.dim}
+      borderColor={theme.faint}
       paddingLeft={2}
       paddingRight={1}
     >
-      <Text color={theme.purple} bold>
+      <Text color={theme.accent} bold>
         What's new
       </Text>
       {notes.map((n, i) => (
-        <Text key={i} color={i === 0 ? theme.white : theme.gray}>
+        <Text key={i} color={i === 0 ? theme.text : theme.muted}>
           {n}
         </Text>
       ))}
       <Box marginTop={1}>
-        <Text color={theme.dim} italic>
+        <Text color={theme.faint} italic>
           /release-notes for more
         </Text>
       </Box>
@@ -115,7 +117,7 @@ export function Header({ width, version, account, notes, server, cwd }: HeaderPr
   return (
     <Box flexDirection="column" width={width}>
       <TopEdge width={width} version={version} />
-      <Box borderStyle="single" borderTop={false} borderColor={theme.dim} width={width}>
+      <Box borderStyle="single" borderTop={false} borderColor={theme.faint} width={width}>
         <LeftPanel account={account} cwd={cwd} />
         <NotesPanel notes={notes.length ? notes : [server.replace(/^https?:\/\//, "")]} />
       </Box>

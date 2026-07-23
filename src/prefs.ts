@@ -31,6 +31,8 @@ export interface Prefs {
   /** The selected loop's slug. */
   loop?: string;
   loopSelections?: LoopSelections;
+  /** The chosen theme's name (see theme.ts). Absent = never picked → the picker runs. */
+  theme?: string;
 }
 
 /** Raw on-disk shape, including the pre-rename `rotor` key we migrate on read. */

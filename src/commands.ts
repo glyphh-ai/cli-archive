@@ -16,7 +16,8 @@ import type { Client } from "@glyphh/client";
 import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
 import { switchModel } from "@glyphh/client/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
-import { selectionsFor, setSelection } from "./prefs.js";
+import { readPrefs, selectionsFor, setSelection } from "./prefs.js";
+import { THEMES, DEFAULT_THEME } from "./theme.js";
 
 export interface CommandCtx {
   client: Client;
@@ -26,6 +27,8 @@ export interface CommandCtx {
   server: string;
   setAccount: (a: Account | null) => void;
   setLoop: (l: string) => void;
+  /** Apply + persist a theme by name (repaints the whole tree). */
+  setTheme: (name: string) => void;
   clearChat: () => void;
   quit: () => void;
   /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
@@ -220,6 +223,26 @@ const COMMANDS: SlashCommand[] = [
         onProgress: (phase, r) => ctx.emit([`${phase} ${Math.round(r * 100)}%`]),
       });
       return [`installed ${id}`, `serving at ${server.url}`, `use it:  /model ${id}:local`];
+    },
+  },
+  {
+    name: "theme",
+    summary: "list themes, or switch: /theme <name>",
+    usage: "/theme [name]",
+    run(ctx, args) {
+      const name = args[0]?.toLowerCase();
+      if (!name) {
+        const cur = readPrefs().theme ?? DEFAULT_THEME;
+        return [
+          "themes:",
+          ...THEMES.map((t) => `  ${t.name === cur ? "▸" : " "} ${t.name.padEnd(9)} ${t.description}`),
+          "switch:  /theme <name>",
+        ];
+      }
+      const match = THEMES.find((t) => t.name === name);
+      if (!match) return [`unknown theme: ${name} — try ${THEMES.map((t) => t.name).join(", ")}`];
+      ctx.setTheme(match.name);
+      return [`theme set to ${match.label}`];
     },
   },
   {

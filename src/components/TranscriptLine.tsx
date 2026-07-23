@@ -16,7 +16,7 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
   if (line.style === "blank") return <Text> </Text>;
   if (line.style === "headSel") {
     return (
-      <Text wrap="truncate-end" backgroundColor={theme.purple} color="black" bold>
+      <Text wrap="truncate-end" backgroundColor={theme.accent} color="black" bold>
         {line.text}
       </Text>
     );
@@ -25,8 +25,8 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
     const glyph = line.text.slice(0, 2);
     return (
       <Text wrap="truncate-end">
-        <Text color={line.style === "headErr" ? "red" : theme.purple}>{glyph}</Text>
-        <Text color={theme.white} bold>
+        <Text color={line.style === "headErr" ? "red" : theme.accent}>{glyph}</Text>
+        <Text color={theme.text} bold>
           {line.text.slice(2)}
         </Text>
       </Text>
@@ -37,18 +37,18 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
     return (
       <Text wrap="truncate-end">
         {line.text.slice(0, i)}
-        <Text color={theme.purple}>● </Text>
-        <Text color={theme.white}>{line.text.slice(i + 2)}</Text>
+        <Text color={theme.accent}>● </Text>
+        <Text color={theme.text}>{line.text.slice(i + 2)}</Text>
       </Text>
     );
   }
   if ((line.style === "user" || line.style === "command") && line.text.startsWith("▌")) {
     return (
       <Text wrap="truncate-end">
-        <Text color={theme.purple} bold>
+        <Text color={theme.accent} bold>
           ▌{" "}
         </Text>
-        <Text color={line.style === "command" ? theme.purple : theme.white}>{line.text.slice(2)}</Text>
+        <Text color={line.style === "command" ? theme.accent : theme.text}>{line.text.slice(2)}</Text>
       </Text>
     );
   }
@@ -58,8 +58,8 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
     if (i >= 0) {
       return (
         <Text wrap="truncate-end" italic={line.style === "hint"}>
-          <Text color={theme.dim}>{line.text.slice(0, i + 1)}</Text>
-          <Text color={theme.gray}>{line.text.slice(i + 1)}</Text>
+          <Text color={theme.faint}>{line.text.slice(0, i + 1)}</Text>
+          <Text color={theme.muted}>{line.text.slice(i + 1)}</Text>
         </Text>
       );
     }
@@ -69,11 +69,11 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
     const end = line.text.indexOf(" ─", start);
     return (
       <Text wrap="truncate-end">
-        <Text color={theme.dim}>{line.text.slice(0, start)}</Text>
-        <Text color={theme.purple} bold>
+        <Text color={theme.faint}>{line.text.slice(0, start)}</Text>
+        <Text color={theme.accent} bold>
           {line.text.slice(start, end)}
         </Text>
-        <Text color={theme.dim}>{line.text.slice(end)}</Text>
+        <Text color={theme.faint}>{line.text.slice(end)}</Text>
       </Text>
     );
   }
@@ -84,23 +84,23 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
     if (first >= 0 && last > first) {
       return (
         <Text wrap="truncate-end">
-          <Text color={theme.dim}>{line.text.slice(0, first + 1)}</Text>
-          <Text color={theme.white}>{line.text.slice(first + 1, last)}</Text>
-          <Text color={theme.dim}>{line.text.slice(last)}</Text>
+          <Text color={theme.faint}>{line.text.slice(0, first + 1)}</Text>
+          <Text color={theme.text}>{line.text.slice(first + 1, last)}</Text>
+          <Text color={theme.faint}>{line.text.slice(last)}</Text>
         </Text>
       );
     }
   }
   const color =
     line.style === "user" || line.style === "answer"
-      ? theme.white
+      ? theme.text
       : line.style === "command"
-        ? theme.purple
+        ? theme.accent
         : line.style === "result"
-          ? theme.gray
+          ? theme.muted
           : line.style === "meta" || line.style === "note" || line.style === "cardEdge"
-            ? theme.dim
-            : theme.gray;
+            ? theme.faint
+            : theme.muted;
   return (
     <Text wrap="truncate-end" color={color}>
       {line.text}
