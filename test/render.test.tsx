@@ -3,7 +3,8 @@
  *
  * render.test.tsx — layout verification without a TTY. ink-testing-library renders each
  * region to a plain-text frame we can assert on: the version in the header outline, the
- * cat, the account, the streaming meta, the Send button, the permission mode, the rotor.
+ * cat, the account, the Send button, the permission mode, the rotor. The transcript is
+ * a LINE MODEL (lines.ts) — pure functions asserted directly, plus a styled-line render.
  */
 
 import React from "react";
@@ -12,9 +13,11 @@ import { render } from "ink-testing-library";
 import { Header } from "../src/components/Header.js";
 import { InputBar } from "../src/components/InputBar.js";
 import { Footer } from "../src/components/Footer.js";
-import { Message } from "../src/components/Message.js";
+import { SubFooter } from "../src/components/SubFooter.js";
+import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { CAT_ROWS } from "../src/banner.js";
-import type { ChatMessage } from "../src/types.js";
+import { answerLines, commandLines, sectionLines, userLines } from "../src/lines.js";
+import type { ChatTurn, TurnStep } from "../src/types.js";
 
 const account = { email: "chris@glyphh.ai", name: "Chris", tier: "pro", credits: 812 };
 const notes = ["Full-screen chat TUI", "Slash commands: /login /status"];
@@ -55,27 +58,77 @@ describe("TUI layout", () => {
     expect(frame).toContain("✓"); // configured
     expect(frame).toContain("rotor base"); // rotor (right)
   });
+});
 
-  it("message: user input bar, answer bullet, and the duration + credits meta", () => {
-    const user: ChatMessage = { id: "1", role: "user", text: "hi" };
-    const answer: ChatMessage = { id: "2", role: "assistant", text: "hello!", meta: { status: "done", credits: 3, durationMs: 2300 } };
-    expect(render(<Message message={user} />).lastFrame()!).toContain("▌ hi");
-    const frame = render(<Message message={answer} />).lastFrame()!;
-    expect(frame).toContain("● hello!"); // assistant bullet
-    expect(frame).toContain("2.3s"); // duration
-    expect(frame).toContain("3 credits");
+describe("line model", () => {
+  it("user input leads with the purple bar; answers with the bullet", () => {
+    expect(userLines("hi", 60).map((l) => l.text).join("\n")).toContain("▌ hi");
+    expect(answerLines("hello!", 60).map((l) => l.text).join("\n")).toContain("● hello!");
   });
 
-  it("message: a slash command shows its └ result", () => {
-    const cmd: ChatMessage = {
-      id: "1",
-      role: "command",
-      text: "/login chris@glyphh.ai",
-      result: ["Login successful", "signed in as chris@glyphh.ai"],
+  it("a slash command carries its └ result lines", () => {
+    const lines = commandLines("/login chris@glyphh.ai", ["Login successful", "signed in"], 80);
+    const text = lines.map((l) => l.text).join("\n");
+    expect(text).toContain("▌ /login chris@glyphh.ai");
+    expect(text).toContain("└ Login successful");
+    expect(text).toContain("signed in");
+    expect(lines.filter((l) => l.style === "result").length).toBe(2);
+  });
+
+  it("a section collapses to 3 details with a fold hint, and unfolds fully", () => {
+    const step: TurnStep = {
+      label: "write files",
+      ok: true,
+      secs: 1.2,
+      details: ["→ a.ts (10 bytes)", "→ b.ts (20 bytes)", "→ c.ts (30 bytes)", "→ d.ts (40 bytes)", "$ npm test"],
     };
-    const frame = render(<Message message={cmd} />).lastFrame()!;
-    expect(frame).toContain("/login chris@glyphh.ai");
-    expect(frame).toContain("└ Login successful");
-    expect(frame).toContain("signed in as chris@glyphh.ai");
+    const folded = sectionLines(step, false);
+    expect(folded[0]!.text).toContain("▸ write files · 1.2s");
+    expect(folded.filter((l) => l.style === "detail").length).toBe(3);
+    expect(folded.find((l) => l.style === "hint")!.text).toContain("+2 lines");
+    const open = sectionLines(step, true);
+    expect(open[0]!.text).toContain("▾ write files");
+    expect(open.filter((l) => l.style === "detail").length).toBe(5);
+    expect(open.find((l) => l.style === "hint")).toBeUndefined();
+  });
+
+  it("a failing step renders the error style + message", () => {
+    const step: TurnStep = { label: "run tests", ok: false, details: [], error: "exit 1" };
+    const lines = sectionLines(step, false);
+    expect(lines[0]!.style).toBe("headErr");
+    expect(lines[0]!.text).toContain("exit 1");
+  });
+
+  it("TranscriptLine renders a selected head inverted and a detail with its gutter", () => {
+    const sel = render(<TranscriptLine line={{ text: "▸ step", style: "headSel" }} />).lastFrame()!;
+    expect(sel).toContain("▸ step");
+    const detail = render(<TranscriptLine line={{ text: "  │ → a.ts", style: "detail" }} />).lastFrame()!;
+    expect(detail).toContain("│ → a.ts");
+  });
+});
+
+describe("status strip", () => {
+  it("a settled turn shows the verb, duration, tokens and credits", () => {
+    const last: ChatTurn = {
+      id: "t1", text: "done", status: "done", durationMs: 2300,
+      tokensUp: 120, tokensDown: 480, credits: 3, stubbed: false, degraded: false,
+    };
+    const frame = render(
+      <SubFooter width={80} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
+    ).lastFrame()!;
+    expect(frame).toContain("Brewed for 2.3s");
+    expect(frame).toContain("120↑ 480↓ tok");
+    expect(frame).toContain("◈ 3 credits");
+  });
+
+  it("a stubbed turn warns that no model is bound", () => {
+    const last: ChatTurn = {
+      id: "t1", text: "", status: "done", durationMs: 100,
+      tokensUp: 0, tokensDown: 0, credits: null, stubbed: true, degraded: false,
+    };
+    const frame = render(
+      <SubFooter width={100} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
+    ).lastFrame()!;
+    expect(frame).toContain("stub answered");
   });
 });
