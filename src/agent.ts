@@ -101,8 +101,12 @@ export interface AgentTurnHandlers {
   onTool: (name: string, input: unknown) => void;
   /** A tool finished; `content` is its (string-flattened, capped) result. */
   onToolResult: (content: string, isError: boolean) => void;
-  /** Rough token progress for the live strip. */
-  onProgress?: (tokens: number) => void;
+  /** Live, ESTIMATED token progress for the spinner strip while the turn runs
+   *  (input from the prompt, output from the streamed text so far). */
+  onProgress?: (up: number, down: number) => void;
+  /** REAL usage from the SDK result — replaces the estimate when the turn ends.
+   *  `up` = input (incl. cache) tokens, `down` = output tokens. */
+  onUsage?: (up: number, down: number, costUsd: number) => void;
 }
 
 export interface AgentTurnOptions {
@@ -167,9 +171,13 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
   let pendingSep = false;
   let runError = "";
   let lastProgressAt = 0;
+  // Live INPUT estimate (~4 chars/token) so the strip shows a plausible ↑ while
+  // the turn runs — real numbers land from the result's usage at the end.
+  const assembled = assemblePrompt(history, prompt);
+  const upEstimate = Math.ceil((assembled.length + SYSTEM.length) / 4);
 
   const q = query({
-    prompt: assemblePrompt(history, prompt),
+    prompt: assembled,
     options: {
       ...(cwd ? { cwd } : {}),
       model,
@@ -224,7 +232,7 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
         const now = Date.now();
         if (now - lastProgressAt > 400) {
           lastProgressAt = now;
-          h.onProgress?.(Math.ceil(finalText.length / 4));
+          h.onProgress?.(upEstimate, Math.ceil(finalText.length / 4));
         }
       }
     } else if (msg.type === "assistant") {
@@ -252,7 +260,22 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
         }
       }
     } else if (msg.type === "result") {
-      const r = msg as { subtype: string; result?: string };
+      const r = msg as {
+        subtype: string;
+        result?: string;
+        total_cost_usd?: number;
+        usage?: {
+          input_tokens?: number; output_tokens?: number;
+          cache_read_input_tokens?: number; cache_creation_input_tokens?: number;
+        };
+      };
+      // Real usage rides the result — the ↑ was pinned at 0 because nothing ever
+      // read it. Input = prompt + both cache reads/writes; output = generated.
+      const u = r.usage;
+      if (u) {
+        const up = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        h.onUsage?.(up, u.output_tokens ?? 0, r.total_cost_usd ?? 0);
+      }
       if (r.subtype === "success") {
         if (!finalText && r.result) {
           finalText = r.result;

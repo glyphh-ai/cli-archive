@@ -16,7 +16,6 @@ export type LineStyle =
   | "result"
   | "head"
   | "headErr"
-  | "headSel"
   | "detail"
   | "hint"
   | "answer"
@@ -85,7 +84,7 @@ export function metaLines(text: string): Line[] {
   return [{ text: `  ${text}`, style: "meta" }];
 }
 
-export function sectionLines(step: TurnStep, expanded: boolean, selected = false): Line[] {
+export function sectionLines(step: TurnStep, expanded: boolean): Line[] {
   const meta: string[] = [];
   if (step.secs !== undefined) meta.push(`${step.secs.toFixed(1)}s`);
   if (step.tokens) meta.push(`${step.tokens.up}↑ ${step.tokens.down}↓`);
@@ -94,11 +93,11 @@ export function sectionLines(step: TurnStep, expanded: boolean, selected = false
   const foldable = step.details.length > COLLAPSED_LINES;
   const fold = foldable ? (expanded ? "▾ " : "▸ ") : "⏺ ";
   const head = `${fold}${step.label}${meta.length ? ` · ${meta.join(" · ")}` : ""}`;
-  const lines: Line[] = [{ text: head, style: selected ? "headSel" : step.ok ? "head" : "headErr" }];
+  const lines: Line[] = [{ text: head, style: step.ok ? "head" : "headErr" }];
   const body = expanded ? step.details : step.details.slice(0, COLLAPSED_LINES);
   for (const d of body) lines.push({ text: `  │ ${d}`, style: "detail" });
   const hidden = step.details.length - body.length;
-  if (hidden > 0) lines.push({ text: `  │ … +${hidden} lines (enter unfolds · ctrl+o all)`, style: "hint" });
+  if (hidden > 0) lines.push({ text: `  │ … +${hidden} lines (ctrl+o to expand)`, style: "hint" });
   return lines;
 }
 

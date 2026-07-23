@@ -7,8 +7,8 @@
  *
  * The transcript is a list of ITEMS flattened to styled lines every render
  * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
- * scroll, tab enters BROWSE mode (walk step receipts, enter unfolds one,
- * ctrl+o unfolds all — retroactively, because lines regenerate from items).
+ * scroll; tool receipts are collapsed by default and ctrl+o toggles them all
+ * open (retroactively, because lines regenerate from items).
  * A leading `/` runs a slash command; plain text runs ONE AGENT TURN (the
  * desktop's engine): tool calls land as collapsible receipts, the answer
  * streams into the `●` line.
@@ -119,12 +119,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const [last, setLast] = useState<ChatTurn | undefined>(undefined);
   const [verb, setVerb] = useState(VERBS[0]!);
   const [elapsed, setElapsed] = useState(0);
-  /** Global expansion default; per-section overrides in `folds`. */
+  /** Tool receipts are collapsed by default; ctrl+o toggles them all open
+   *  (the Claude Code model — no modal browse mode, no per-receipt cursor). */
   const [expanded, setExpanded] = useState(false);
-  const [folds, setFolds] = useState<Record<string, boolean>>({});
-  /** `compose` types into the input; `browse` walks section heads (tab flips). */
-  const [uiMode, setUiMode] = useState<"compose" | "browse">("compose");
-  const [selId, setSelId] = useState<string | null>(null);
   /** Lines scrolled up from the tail; 0 = follow mode. */
   const [scroll, setScroll] = useState(0);
   const [chromeH, setChromeH] = useState({ header: 9, strip: 6 });
@@ -251,8 +248,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       kind: "card",
       title: who ? `Welcome back, ${who}` : "Welcome to Glyphh",
       body: [
-        "The Glyphh agent — the same engine as the desktop, in your terminal. Answers stream live; tool calls (apps, connections, your desktop) land as receipts.",
-        "tab browses/unfolds receipts · ctrl+o unfolds all · shift+tab cycles permission mode",
+        "The Glyphh agent — the same engine as the desktop, in your terminal. Answers stream live; tool calls (files, shell, the web, your platform) land as receipts.",
+        "ctrl+o expands/collapses tool output · ↑/↓ scrolls · shift+tab cycles permission mode",
         "/help for commands · /theme to restyle · /loop to switch loops",
       ],
     });
@@ -387,8 +384,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
                   });
                 }
               },
-              onProgress: (tokens) => {
-                turn.tokensDown = tokens;
+              onProgress: (up, down) => {
+                turn.tokensUp = up;
+                turn.tokensDown = down;
+                setLast({ ...turn });
+              },
+              onUsage: (up, down, costUsd) => {
+                turn.tokensUp = up;       // real input (incl. cache) tokens
+                turn.tokensDown = down;   // real output tokens
+                turn.costUsd = costUsd;
                 setLast({ ...turn });
               },
             },
@@ -437,8 +441,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         clearChat: () => {
           history.current = [];
           setItems([]);
-          setFolds({});
-          setSelId(null);
+          setExpanded(false);
           setScroll(0);
           setLast(undefined);
         },
@@ -469,26 +472,22 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     void runTurn(raw);
   }, [account, busy, editInput, push, runCommand, runTurn]);
 
-  // ── The line model — regenerated from items, so folding is retroactive.
-  //    Anchors record each section head's id + line index for browse/scroll. ──
+  // ── The line model — regenerated from items, so a fold toggle is retroactive
+  //    (ctrl+o re-renders every receipt at the new expansion). ──
   const width = Math.max(20, cols - 4);
-  const { lines, anchors } = useMemo(() => {
+  const lines = useMemo(() => {
     const out: Line[] = [];
-    const anchors: Array<{ id: string; line: number; foldable: boolean }> = [];
     for (const item of items) {
       if (item.kind === "user") out.push(...userLines(item.text, width));
       else if (item.kind === "command") out.push(...commandLines(item.text, item.result, width));
-      else if (item.kind === "section") {
-        anchors.push({ id: item.id, line: out.length, foldable: item.step.details.length > 3 });
-        const open = folds[item.id] ?? expanded;
-        out.push(...sectionLines(item.step, open, uiMode === "browse" && selId === item.id));
-      } else if (item.kind === "answer") out.push(...answerLines(item.text, width));
+      else if (item.kind === "section") out.push(...sectionLines(item.step, expanded));
+      else if (item.kind === "answer") out.push(...answerLines(item.text, width));
       else if (item.kind === "meta") out.push(...metaLines(item.text));
       else if (item.kind === "card") out.push(...cardLines(item.title, item.body, width));
       else out.push(...noteLines(item.text));
     }
-    return { lines: out, anchors };
-  }, [items, expanded, folds, width, uiMode, selId]);
+    return out;
+  }, [items, expanded, width]);
 
   const paneH = Math.max(3, rows - 1 - chromeH.header - chromeH.strip);
   const maxScroll = Math.max(0, lines.length - paneH);
@@ -501,29 +500,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     [lines.length, paneH],
   );
 
-  /** Scroll so a line index sits inside the viewport (either direction). */
-  const ensureVisible = useCallback(
-    (line: number) => {
-      setScroll((s) => {
-        const maxS = Math.max(0, lines.length - paneH);
-        const cur = Math.min(s, maxS);
-        const st = Math.max(0, lines.length - paneH - cur);
-        if (line < st) return Math.min(maxS, lines.length - paneH - line);
-        if (line >= st + paneH) return Math.max(0, lines.length - paneH - (line - paneH + 1));
-        return cur;
-      });
-    },
-    [lines.length, paneH],
-  );
-
-  // Folding changes geometry AFTER the keypress — re-anchor the selection with
-  // fresh line indices (setScroll bails when unchanged, so no loops).
-  useEffect(() => {
-    if (uiMode !== "browse" || !selId) return;
-    const a = anchors.find((x) => x.id === selId);
-    if (a) ensureVisible(a.line);
-  }, [folds, selId, uiMode, anchors, ensureVisible]);
-
   useInput((ch, key) => {
     // A pending tool approval owns the keyboard: y allows once, a allows the
     // tool for the session, n/esc refuses. Everything else is swallowed.
@@ -535,9 +511,10 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       } else if (ch === "n" || key.escape) gateResolve.current?.(false);
       return;
     }
+    // ctrl+o toggles ALL tool receipts open/collapsed (Claude Code's model —
+    // one key, no mode to enter). Folding re-renders from items, retroactive.
     if (key.ctrl && ch === "o") {
       setExpanded((e) => !e);
-      setFolds({});
       return;
     }
     if (key.ctrl && ch === "c") {
@@ -552,53 +529,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       writePrefs({ permissionMode: next });
       return;
     }
-    if (key.tab || ch === "\t" || (uiMode === "browse" && key.escape)) {
-      if (uiMode === "compose") {
-        const lastFoldable = [...anchors].reverse().find((a) => a.foldable);
-        const startSel = lastFoldable?.id ?? (anchors.length ? anchors[anchors.length - 1]!.id : null);
-        setSelId(startSel);
-        if (startSel) {
-          const a = anchors.find((x) => x.id === startSel);
-          if (a) ensureVisible(a.line);
-        }
-        setUiMode(startSel ? "browse" : "compose");
-      } else {
-        setUiMode("compose");
-        setScroll(0);
-      }
-      return;
-    }
-    if (uiMode === "browse") {
-      const idx = anchors.findIndex((a) => a.id === selId);
-      if (key.upArrow || key.downArrow) {
-        const next = anchors[Math.max(0, Math.min(anchors.length - 1, idx + (key.upArrow ? -1 : 1)))];
-        if (next) {
-          setSelId(next.id);
-          ensureVisible(next.line);
-        }
-        return;
-      }
-      if (key.return || ch === " ") {
-        if (selId) {
-          setFolds((f) => ({ ...f, [selId]: !(f[selId] ?? expanded) }));
-          const a = anchors.find((x) => x.id === selId);
-          if (a) ensureVisible(a.line);
-        }
-        return;
-      }
-      if (key.pageUp || key.pageDown) {
-        scrollBy(key.pageUp ? paneH - 1 : -(paneH - 1));
-        return;
-      }
-      if (ch && (ch >= " " || /[\r\n]/.test(ch))) {
-        // Typing means the user wants the composer back — switch and let the
-        // shared handling below process this same keystroke.
-        setUiMode("compose");
-        setScroll(0);
-      } else {
-        return;
-      }
-    }
+    if (key.tab || ch === "\t") return; // no browse mode — bare tab is inert
     // The scroll surface: wheel arrives as arrows (alternate-scroll), plus
     // paging keys. Follow mode is offset 0 — any new content snaps the tail.
     if (key.upArrow) {

@@ -31,6 +31,8 @@ export interface ChatTurn {
   tokensDown: number;
   /** Credits consumed this turn (whole credits), once known. */
   credits: number | null;
+  /** Real USD cost of this turn from the SDK result usage, once known. */
+  costUsd?: number;
   stubbed: boolean;
   degraded: boolean;
 }

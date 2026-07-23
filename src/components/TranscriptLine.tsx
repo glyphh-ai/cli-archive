@@ -14,13 +14,6 @@ import type { Line } from "../lines.js";
 
 export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
   if (line.style === "blank") return <Text> </Text>;
-  if (line.style === "headSel") {
-    return (
-      <Text wrap="truncate-end" backgroundColor={theme.accent} color="black" bold>
-        {line.text}
-      </Text>
-    );
-  }
   if (line.style === "head" || line.style === "headErr") {
     const glyph = line.text.slice(0, 2);
     return (
