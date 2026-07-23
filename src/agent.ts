@@ -145,6 +145,15 @@ function assemblePrompt(history: AgentTurnOptions["history"], prompt: string): s
 
 const cap = (s: string, n = 600): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** Pretty-print a JSON string (object/array) so a tool result reads as many
+ *  short lines — readable AND foldable — instead of one raw blob. Non-JSON
+ *  (bash output, plain text) passes through untouched. */
+function prettyJson(s: string): string {
+  const t = s.trim();
+  if (!(t.startsWith("{") || t.startsWith("["))) return s;
+  try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return s; }
+}
+
 /** Flatten a tool_result content payload to displayable text. */
 function flattenResult(content: unknown): string {
   if (typeof content === "string") return content;
@@ -154,7 +163,7 @@ function flattenResult(content: unknown): string {
       .filter(Boolean)
       .join("\n");
   }
-  return content == null ? "" : JSON.stringify(content);
+  return content == null ? "" : JSON.stringify(content, null, 2);
 }
 
 /**
@@ -256,7 +265,10 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
       const blocks = (msg as unknown as { message?: { content?: unknown } }).message?.content;
       if (Array.isArray(blocks)) {
         for (const b of blocks as Array<{ type?: string; content?: unknown; is_error?: boolean }>) {
-          if (b.type === "tool_result") h.onToolResult(cap(flattenResult(b.content)), Boolean(b.is_error));
+          // Pretty-print JSON so results read as many short lines (foldable),
+          // and allow a larger cap — collapsed to a few lines anyway, ctrl+o
+          // expands. Non-JSON output passes through.
+          if (b.type === "tool_result") h.onToolResult(cap(prettyJson(flattenResult(b.content)), 4000), Boolean(b.is_error));
         }
       }
     } else if (msg.type === "result") {

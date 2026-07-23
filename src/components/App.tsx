@@ -378,7 +378,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
                     step: {
                       label: `${label} → ${isError ? "error" : "result"}`,
                       ok: !isError,
-                      details: content ? content.split("\n").slice(0, 12) : [],
+                      // Collapsed to a few lines by default (ctrl+o expands), so
+                      // keep the full body available rather than clipping at 12.
+                      details: content ? content.split("\n").slice(0, 200) : [],
                       ...(isError ? { error: "tool error" } : {}),
                     },
                   });
@@ -571,10 +573,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
-      <Box flexDirection="column" ref={headerBox}>
+      <Box flexDirection="column" flexShrink={0} ref={headerBox}>
         <Header width={cols} version={version} account={account} notes={RELEASE_NOTES} server={server} cwd={cwd} />
       </Box>
-      <Box flexDirection="column" flexGrow={1} paddingX={1} overflow="hidden">
+      {/* The scroll surface. minHeight={0} is load-bearing: a flexGrow child
+          defaults to min-height:auto (its content size), so without this it
+          refuses to shrink and PUSHES the footer past the terminal — the
+          "footer scrolls away" bug. With it, the box clips (overflow hidden)
+          and the footer stays pinned no matter how long the transcript grows. */}
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} paddingX={1} overflow="hidden">
         {visible.length === 0 ? (
           <Text color={theme.faint}>Ask Glyphh anything, or type /help. Ctrl+C to quit.</Text>
         ) : (
@@ -584,7 +591,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       {clampedScroll > 0 ? (
         <Text color={theme.faint}>{`  ↓ ${clampedScroll} lines below · ↑/↓ scrolls · pgdn returns`}</Text>
       ) : null}
-      <Box flexDirection="column" ref={stripBox}>
+      <Box flexDirection="column" flexShrink={0} ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
         {gatePending ? (
           <Box flexDirection="column">
