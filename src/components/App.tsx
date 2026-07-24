@@ -245,6 +245,34 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     setThemeVersion((v) => v + 1); // repaint the whole tree in the new palette
   }, []);
 
+  // Resolve a VALID loop on mount. The default slug ("default") — or a stale
+  // saved pref — often isn't one this account actually has, so every turn would
+  // fail with a server "loop not found" and no model would ever bind. Fetch the
+  // account's loops and, if the current one isn't among them, fall back to the
+  // first available (or say there are none).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { loops } = await client.loops.list();
+        if (cancelled) return;
+        if (!loops?.length) {
+          push({ kind: "note", text: "No loops available for this account — create one in the Glyphh platform, then restart." });
+          return;
+        }
+        if (!loops.some((l) => l.slug === loop)) {
+          const next = loops[0]!.slug;
+          setLoop(next);
+          push({ kind: "note", text: `Loop "${loop}" isn't available — switched to "${next}".` });
+        }
+      } catch {
+        /* offline / server error — leave the loop as-is; a turn will report it */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
+
   // Welcome card — mount-only by design. Greets the signed-in user (the boot gate has
   // already resolved the session) inside a bordered card at the top of the transcript.
   useEffect(() => {
@@ -320,12 +348,29 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         // bearer — token deltas render as they arrive. This device's per-loop picks
         // layer in as selections; a live `/use` switch wins.
         if (modelRef.current.loop !== loop) {
-          const roles = await client.loops.roles(loop, {
-            ...selectionsFor(loop),
-            ...sessionOverrides(sessionId.current, loop),
-          });
+          let effective = loop;
+          let roles;
+          try {
+            roles = await client.loops.roles(effective, {
+              ...selectionsFor(effective),
+              ...sessionOverrides(sessionId.current, effective),
+            });
+          } catch {
+            // The selected loop isn't available for this account — fall back to
+            // the first loop it actually has so a turn never dies on "loop not
+            // found", and remember the choice.
+            const list = await client.loops.list().catch(() => ({ loops: [] as Array<{ slug: string }> }));
+            const first = list.loops[0]?.slug;
+            if (!first) throw new Error("no loops are available for this account — create one in the Glyphh platform");
+            effective = first;
+            setLoop(first);
+            roles = await client.loops.roles(effective, {
+              ...selectionsFor(effective),
+              ...sessionOverrides(sessionId.current, effective),
+            });
+          }
           const id = roles.find((r) => r.modelId)?.modelId ?? null;
-          modelRef.current = { loop, id: id ? (id.includes("::") ? id.slice(id.indexOf("::") + 2) : id) : null };
+          modelRef.current = { loop: effective, id: id ? (id.includes("::") ? id.slice(id.indexOf("::") + 2) : id) : null };
         }
         if (!modelRef.current.id) {
           turn.status = "error";
