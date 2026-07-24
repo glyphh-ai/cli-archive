@@ -1,11 +1,11 @@
-# @glyphh/cli
+# @glyphh-ai/cli
 
 The Glyphh full-screen chat **TUI** — a thin client over [`@glyphh/client`](../sdk).
 
 ```
 ┌─ Glyphh v1.0.0 ──────────────────────────────────────────────────────────┐
-│  <cat>   Chris Timmerman                                    latest release │
-│          chris@glyphh.ai                                 v1.0.0 — chat TUI │
+│  <cat>   Tom Tommerson                                      latest release │
+│          tom.tommerson@glyphh.ai                         v1.0.0 — chat TUI │
 │          plan Pro  ·  812 credits                            api.glyphh.ai │
 └───────────────────────────────────────────────────────────────────────────┘
 
@@ -20,6 +20,13 @@ The Glyphh full-screen chat **TUI** — a thin client over [`@glyphh/client`](..
 │ › now wire it into the CLI▍                                       Send ⏎    │
 └───────────────────────────────────────────────────────────────────────────┘
  ◈ ask each time                                          rotor glyphh-coder
+```
+
+## Install
+
+```sh
+npm i -g @glyphh-ai/cli
+glyphh
 ```
 
 ## Layout
