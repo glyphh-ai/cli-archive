@@ -43,11 +43,13 @@ export function Login({ client, onAuthed }: { client: Client; onAuthed: () => vo
           signal: ctrl.signal,
           onPrompt: (p) => {
             const url = p.verificationUriComplete || p.verificationUri;
-            const opened = openBrowser(url);
+            // Do NOT auto-open — hand the user the code first and let them press
+            // enter to open the browser (or copy the URL). Some terminals steal
+            // focus on an auto-launch; this keeps the code visible and in control.
             setPhase({
               kind: "prompt",
               prompt: { userCode: p.userCode, verificationUri: p.verificationUri, verificationUriComplete: url },
-              opened,
+              opened: false,
             });
           },
         });
@@ -95,7 +97,9 @@ export function Login({ client, onAuthed }: { client: Client; onAuthed: () => vo
       {phase.kind === "prompt" ? (
         <Box flexDirection="column" alignItems="center" marginTop={1}>
           <Text color={theme.muted}>
-            {phase.opened ? "Opened your browser to approve this device." : "Open this URL in your browser to approve:"}
+            {phase.opened
+              ? "Opened your browser to approve this device."
+              : "Press enter to open your browser — sign in with Google or email to approve."}
           </Text>
           <Box marginTop={1}>
             <Text color={theme.faint}>{phase.prompt.verificationUri}</Text>
@@ -121,7 +125,7 @@ export function Login({ client, onAuthed }: { client: Client; onAuthed: () => vo
           </Box>
           <Box marginTop={1}>
             <Text color={theme.faint} italic>
-              enter · re-open browser   ·   ctrl+c · quit
+              {phase.opened ? "enter · re-open browser   ·   ctrl+c · quit" : "enter · open browser   ·   ctrl+c · quit"}
             </Text>
           </Box>
         </Box>

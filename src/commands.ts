@@ -32,6 +32,9 @@ export interface CommandCtx {
   setTheme: (name: string) => void;
   clearChat: () => void;
   quit: () => void;
+  /** Hand off to the interactive login screen (the boot flow) — same UX as first
+   *  sign-in: confirm, press enter to open the browser, Google or email. */
+  relogin?: () => void;
   /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
   emit: (lines: string[]) => void;
   /** Reload the footer's model slots (after a selection change). */
@@ -65,9 +68,14 @@ const COMMANDS: SlashCommand[] = [
     aliases: ["auth", "signin"],
     summary: "sign in from this terminal (approve in a browser)",
     async run(ctx) {
-      // Device authorization grant — SAME flow as the boot login screen: open the
-      // browser straight to the approval page (code embedded in the URL), and show
-      // the code + URL only as the fallback for a box that can't open a browser.
+      // Hand off to the full-screen login gate — the SAME interactive flow as first
+      // sign-in: it shows the code, waits for "enter · open browser", and offers
+      // Google (via the platform) or email. Falls back to an inline device grant on
+      // the off chance the host didn't wire relogin.
+      if (ctx.relogin) {
+        ctx.relogin();
+        return ["opening sign-in…"];
+      }
       ctx.emit(["starting device login…"]);
       await ctx.client.auth.deviceLogin({
         onPrompt: (p) => {

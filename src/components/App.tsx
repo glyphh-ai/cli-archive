@@ -104,9 +104,12 @@ export interface AppProps {
   loop: string;
   /** The session already resolved by the boot gate — seeds the header without a flash. */
   initialAccount?: Account | null;
+  /** Drop back to the interactive login screen — /login reuses the boot flow so it
+   *  gets the same "press enter to open the browser" UX (and Google option). */
+  onRelogin?: () => void;
 }
 
-export function App({ client, version, server, cwd, loop: initialLoop, initialAccount }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -137,6 +140,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
 
   const nextId = useRef(0);
   const turnStartedAt = useRef(0);
+  /** Aborts the in-flight turn (Esc). Null when no turn is running. */
+  const turnAbort = useRef<AbortController | null>(null);
   const inputRef = useRef("");
   const headerBox = useRef<DOMElement | null>(null);
   const stripBox = useRef<DOMElement | null>(null);
@@ -306,6 +311,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       };
       setLast({ ...turn });
       setBusy(true);
+      const abort = new AbortController();
+      turnAbort.current = abort;
       try {
         // THE DESKTOP'S PATH, exactly: the model comes from `loops.roles` (the same
         // call the footer chip reads, so the chip and the run agree by construction),
@@ -341,6 +348,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
               prompt,
               cwd: process.cwd(),
               gate: (tool, input) => gateTool(tool, input),
+              signal: abort.signal,
             },
             {
               onDelta: (t) => {
@@ -401,16 +409,22 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           );
           text = finalText || text;
           turn.text = text;
-          if (!text.trim()) push({ kind: "note", text: "(no answer text — the run ended after tool calls)" });
+          const stopped = abort.signal.aborted;
+          if (stopped) push({ kind: "note", text: "⏹ Stopped." });
+          else if (!text.trim()) push({ kind: "note", text: "(no answer text — the run ended after tool calls)" });
+          // A stopped turn's partial answer still belongs in the history so a
+          // follow-up ("continue") has the context.
           history.current.push({ role: "user", content: prompt });
           history.current.push({ role: "assistant", content: text || "…" });
-          if (turn.status !== "error") turn.status = "done";
+          if (turn.status !== "error") turn.status = stopped ? "stopped" : "done";
         }
         turn.durationMs = Date.now() - startedAt;
         setLast({ ...turn });
         // The settle line under the answer: `* Verbed for 3.1s` (+ credits when known).
+        const settleVerb =
+          turn.status === "error" ? "Stalled" : turn.status === "stopped" ? "Stopped" : VERBS[nextId.current % VERBS.length]!.past;
         const parts = [
-          turn.status === "error" ? "Stalled" : VERBS[nextId.current % VERBS.length]!.past,
+          settleVerb,
           `for ${(turn.durationMs / 1000).toFixed(1)}s`,
         ];
         if (turn.credits !== null) parts.push(`· ◈ ${turn.credits} credit${turn.credits === 1 ? "" : "s"}`);
@@ -422,11 +436,18 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         push({ kind: "answer", text: turn.text });
         setLast({ ...turn });
       } finally {
+        turnAbort.current = null;
         setBusy(false);
       }
     },
     [client, loop, push],
   );
+
+  /** Stop the in-flight turn (Esc). The agent subprocess is torn down; the partial
+   *  answer already streamed stays on screen. */
+  const stopTurn = useCallback(() => {
+    turnAbort.current?.abort();
+  }, []);
 
   const runCommand = useCallback(
     async (line: string) => {
@@ -448,6 +469,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           setLast(undefined);
         },
         quit: () => exit(),
+        ...(onRelogin ? { relogin: onRelogin } : {}),
         emit: (lines) => patchItem(id, (it) => ({ ...it, result: lines }) as Item),
         refreshConfig: () => setConfigVersion((v) => v + 1),
         sessionId: sessionId.current,
@@ -458,7 +480,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version],
+    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version, onRelogin],
   );
 
   const submit = useCallback(() => {
@@ -511,6 +533,12 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         sessionAllowed.current.add(gatePending.tool);
         gateResolve.current?.(true);
       } else if (ch === "n" || key.escape) gateResolve.current?.(false);
+      return;
+    }
+    // Esc stops the RUNNING turn (kills the agent subprocess, keeps the partial
+    // answer). Ctrl+C still quits the whole app — Esc is the "stop this, stay here".
+    if (busy && key.escape) {
+      stopTurn();
       return;
     }
     // ctrl+o toggles ALL tool receipts open/collapsed (Claude Code's model —

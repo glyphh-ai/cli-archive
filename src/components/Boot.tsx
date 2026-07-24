@@ -86,6 +86,15 @@ export function Boot({ client, version, server, cwd, loop, authLost }: BootProps
     });
   }, [client, afterAuth]);
 
+  // /login (user-initiated) → the same login gate a dead session drops to. On
+  // success onAuthed bumps the epoch, so the App remounts on the fresh session.
+  const onRelogin = useCallback(() => {
+    resetAgentAuth();
+    stopMachineHost();
+    setAccount(null);
+    setPhase("login");
+  }, []);
+
   const onPickTheme = useCallback((name: string) => {
     applyTheme(name);
     writePrefs({ theme: name });
@@ -103,6 +112,6 @@ export function Boot({ client, version, server, cwd, loop, authLost }: BootProps
   if (phase === "login") return <Login client={client} onAuthed={onAuthed} />;
   if (phase === "theme") return <ThemePicker current={readPrefs().theme} onPick={onPickTheme} />;
   return (
-    <App key={epoch} client={client} version={version} server={server} cwd={cwd} loop={loop} initialAccount={account} />
+    <App key={epoch} client={client} version={version} server={server} cwd={cwd} loop={loop} initialAccount={account} onRelogin={onRelogin} />
   );
 }

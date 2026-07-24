@@ -124,6 +124,9 @@ export interface AgentTurnOptions {
    * (server-side governance still applies to every call).
    */
   gate?: (tool: string, input: unknown) => Promise<boolean>;
+  /** Stop the whole turn — tears down the underlying agent subprocess — when this
+   *  aborts. The partial answer streamed so far is kept and returned. */
+  signal?: AbortSignal;
 }
 
 const SYSTEM = [
@@ -186,10 +189,19 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
   const assembled = assemblePrompt(history, prompt);
   const upEstimate = Math.ceil((assembled.length + SYSTEM.length) / 4);
 
+  // A stop (Esc in the TUI) aborts this controller, which the SDK uses to kill the
+  // agent subprocess. Mirror the caller's signal onto our own so we still own teardown.
+  const abortController = new AbortController();
+  if (opts.signal) {
+    if (opts.signal.aborted) abortController.abort();
+    else opts.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+  }
+
   const q = query({
     prompt: assembled,
     options: {
       ...(cwd ? { cwd } : {}),
+      abortController,
       model,
       systemPrompt: SYSTEM,
       settingSources: [],
@@ -227,7 +239,8 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
     },
   });
 
-  for await (const msg of q as AsyncIterable<SDKMessage>) {
+  try {
+   for await (const msg of q as AsyncIterable<SDKMessage>) {
     if (msg.type === "stream_event") {
       const ev = (msg as unknown as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
       if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
@@ -298,6 +311,12 @@ export async function runAgentTurn(opts: AgentTurnOptions, h: AgentTurnHandlers)
         runError = `run ended: ${r.subtype.replaceAll("_", " ")}`;
       }
     }
+   }
+  } catch (err) {
+    // A user stop tears the async iterator down mid-flight — that's expected, not a
+    // failure: keep whatever streamed and return it as the (partial) answer.
+    if (abortController.signal.aborted) return finalText;
+    throw err;
   }
   if (runError) throw new Error(runError);
   return finalText;

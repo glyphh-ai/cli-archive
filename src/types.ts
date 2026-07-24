@@ -7,7 +7,7 @@
  * while it streams and settles with per-turn meta (duration + tokens + credits).
  */
 
-export type TurnStatus = "running" | "done" | "refused" | "error";
+export type TurnStatus = "running" | "done" | "refused" | "error" | "stopped";
 
 /** One tool/model step of a running turn, rendered as a collapsible receipt. */
 export interface TurnStep {
