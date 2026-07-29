@@ -5,11 +5,11 @@
       "cron": "7 7 * * *",
       "prompt": "Refresh the daily news brief at /Users/timmetim/development/yo/chris-test/index.html. Do this: (1) WebFetch https://www.yahoo.com and extract today's top 10-13 headlines across varied categories (politics, world, business/markets, tech, entertainment, sports, health, etc.) with a short blurb and source for each. (2) Write a punchy 2-3 paragraph \"sick summary\" (with a few <strong> tags on key facts) tying the day's biggest stories together in a witty, editorial voice. (3) Read the file, then use Edit to replace the JSON content inside the <script type=\"application/json\" id=\"news-data\"> tag with a new JSON object shaped exactly like the existing one (keys: date [today, YYYY-MM-DD], updated [human-readable date+time string], summary [array of paragraph strings], stories [array of {category, accent (hex color), title, blurb, source}]). Do not change anything else in the file (keep all HTML/CSS/JS as-is) — only replace the JSON blob's contents. Do not ask the user for confirmation, just do it silently and don't report back unless something fails.",
       "createdAt": 1784830092239,
+      "lastFiredAt": 1785336415123,
       "recurring": true,
       "createdBySessionId": "1ab76c65-3163-4d24-a0fb-e8f9bcfa8b5c",
       "createdByPid": 2598,
-      "createdByProcStart": "Thu Jul 23 17:57:58 2026",
-      "lastFiredAt": 1784902860696
+      "createdByProcStart": "Thu Jul 23 17:57:58 2026"
     }
   ]
 }

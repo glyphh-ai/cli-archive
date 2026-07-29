@@ -18,16 +18,33 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Client } from "@glyphh/client";
 import { startInterceptor, type Interceptor } from "@glyphh/client/runtime";
 
-/** App-owned config home for the agent subprocess (never ~/.claude). */
+/** App-owned config home for the agent subprocess (never ~/.claude) — and
+ *  PER CLI INSTANCE: every launch is its own agent session, fully isolated
+ *  from the desktop app's subprocess and from every other CLI. (A shared
+ *  config dir let a fresh CLI see another agent's live session registry —
+ *  "hi there" continued someone else's work.) The instance dir dies with
+ *  the process; dirs orphaned by crashes are swept on the next launch. */
+let instanceConfigDir: string | null = null;
 function agentConfigDir(): string {
-  const dir = join(process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh"), "agent-config");
+  if (instanceConfigDir) return instanceConfigDir;
+  const base = join(process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh"), "agent-config-cli");
+  try {
+    for (const d of readdirSync(base)) {
+      const m = /^i-(\d+)$/.exec(d);
+      if (!m) continue;
+      try { process.kill(Number(m[1]), 0); } catch { rmSync(join(base, d), { recursive: true, force: true }); }
+    }
+  } catch { /* first launch — base doesn't exist yet */ }
+  const dir = join(base, `i-${process.pid}`);
   mkdirSync(dir, { recursive: true });
+  process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
+  instanceConfigDir = dir;
   return dir;
 }
 
