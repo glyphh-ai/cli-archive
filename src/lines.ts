@@ -107,6 +107,77 @@ export function noteLines(text: string): Line[] {
 
 /** A boxed card: `╭─ Title ─…─╮` edge, body rows, closing edge. The title row
  *  carries the accent; body rows wrap to the card's inner width. */
+
+// ── The launch banner as SCROLLABLE lines ────────────────────────────────────
+// The header used to be fixed chrome above the transcript; on short terminals
+// it ate the whole screen and on narrow ones the braille cat wrapped into
+// soup. As transcript lines it scrolls away naturally, and the cat renders
+// only when the terminal is wide enough to hold it intact.
+
+export interface HeaderInfo {
+  version: string;
+  name: string | null;
+  plan: string | null;
+  email: string | null;
+  cwd: string;
+  notes: string[];
+}
+
+/** Braille + box glyphs are single-width, so code-point length IS columns. */
+const clen = (s: string): number => [...s].length;
+const padCell = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - clen(s)));
+const centerCell = (s: string, w: number): string => {
+  const pad = Math.max(0, w - clen(s));
+  const left = Math.floor(pad / 2);
+  return " ".repeat(left) + s + " ".repeat(pad - left);
+};
+const clipEnd = (s: string, w: number): string =>
+  clen(s) <= w ? s : [...s].slice(0, Math.max(0, w - 1)).join("") + "…";
+const clipStart = (s: string, w: number): string =>
+  clen(s) <= w ? s : "…" + [...s].slice(clen(s) - (w - 1)).join("");
+
+/** Show the cat only when the two-panel layout genuinely fits. */
+const CAT_MIN_WIDTH = 64;
+
+export function headerLines(width: number, cat: readonly string[], info: HeaderInfo): Line[] {
+  const w = Math.max(30, Math.min(width, 100));
+  const inner = w - 2;
+  const label = `Glyphh ${info.version}`;
+  const out: Line[] = [{
+    text: `┌─ ${clipEnd(label, inner - 5)} ${"─".repeat(Math.max(0, inner - clen(label) - 5))}─┐`,
+    style: "cardTitle",
+  }];
+  const row = (text: string): void => { out.push({ text: `│${padCell(clipEnd(text, inner), inner)}│`, style: "cardBody" }); };
+
+  const who: string[] = info.name
+    ? [info.name, info.plan ?? "", info.email ?? "", clipStart(info.cwd, inner - 4)].filter(Boolean)
+    : ["not signed in", "/login to sign in", clipStart(info.cwd, inner - 4)];
+  const news = ["What's new", ...info.notes, "", "/release-notes for more"];
+
+  if (w >= CAT_MIN_WIDTH) {
+    // Two panels: the cat + identity on the left, release notes on the right.
+    const leftW = 24;
+    const rightW = inner - leftW - 1;
+    const left = [...cat.map((r) => centerCell(r, leftW)), "", ...who.map((t) => centerCell(clipEnd(t, leftW - 2), leftW))];
+    const right = news.map((t) => ` ${clipEnd(t, rightW - 2)}`);
+    const rowsN = Math.max(left.length, right.length);
+    for (let i = 0; i < rowsN; i++) {
+      out.push({
+        text: `│${padCell(left[i] ?? "", leftW)}│${padCell(right[i] ?? "", rightW)}│`,
+        style: "cardBody",
+      });
+    }
+  } else {
+    // Narrow: one column, no cat — nothing left to trash.
+    for (const t of who) row(t);
+    row("");
+    for (const t of news) row(t);
+  }
+  out.push({ text: `└${"─".repeat(inner)}┘`, style: "cardEdge" });
+  out.push({ text: "", style: "blank" });
+  return out;
+}
+
 export function cardLines(title: string, body: string[], width: number): Line[] {
   const inner = Math.max(20, Math.min(width, 100)) - 4;
   const top = `╭─ ${title} ${"─".repeat(Math.max(0, inner - title.length - 2))}╮`;

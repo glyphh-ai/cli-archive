@@ -1,7 +1,9 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * App.tsx — the TUI root. Full-screen fixed layout: Header pinned at top, a
+ * App.tsx — the TUI root. One scroll surface over a sticky bottom strip: the
+ * banner is the transcript's first content (it scrolls away; the cat renders
+ * only when the terminal is wide enough), and a
  * LINE-MODEL transcript filling the middle, then the status strip + composer +
  * footer pinned at the bottom.
  *
@@ -22,7 +24,7 @@ import { runAgentTurn } from "../agent.js";
 // Live model switches (/use) audit + layer in via the SDK override store.
 import { sessionOverrides } from "@glyphh/client/runtime";
 import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
-import { Header } from "./Header.js";
+import { CAT_ROWS } from "../banner.js";
 import { InputBar } from "./InputBar.js";
 import { Footer, type FooterSlot } from "./Footer.js";
 import { SubFooter } from "./SubFooter.js";
@@ -30,7 +32,7 @@ import { TranscriptLine } from "./TranscriptLine.js";
 import { theme, applyTheme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { runSlash, RELEASE_NOTES, type CommandCtx } from "../commands.js";
-import {
+import { headerLines,
   answerLines,
   cardLines,
   commandLines,
@@ -127,7 +129,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const [expanded, setExpanded] = useState(false);
   /** Lines scrolled up from the tail; 0 = follow mode. */
   const [scroll, setScroll] = useState(0);
-  const [chromeH, setChromeH] = useState({ header: 9, strip: 6 });
+  const [chromeH, setChromeH] = useState({ strip: 6 });
   // Permission mode + the selected loop are per-device prefs (~/.glyphh/config.json).
   const [mode, setMode] = useState<PermissionMode>(() => readPrefs().permissionMode ?? "ask");
   const [loop, setLoopState] = useState(() => readPrefs().loop ?? initialLoop);
@@ -143,7 +145,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   /** Aborts the in-flight turn (Esc). Null when no turn is running. */
   const turnAbort = useRef<AbortController | null>(null);
   const inputRef = useRef("");
-  const headerBox = useRef<DOMElement | null>(null);
   const stripBox = useRef<DOMElement | null>(null);
   // The loop's resolved primary model (bare id), cached per loop.
   const modelRef = useRef<{ loop: string | null; id: string | null }>({ loop: null, id: null });
@@ -189,9 +190,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
 
   // Real chrome heights each frame — the viewport height is exact, not guessed.
   useEffect(() => {
-    const header = headerBox.current ? measureElement(headerBox.current).height : chromeH.header;
     const strip = stripBox.current ? measureElement(stripBox.current).height : chromeH.strip;
-    if (header !== chromeH.header || strip !== chromeH.strip) setChromeH({ header, strip });
+    if (strip !== chromeH.strip) setChromeH({ strip });
   });
 
   // The selected loop's resolved model slots → footer. One call (`loops.roles`) both the
@@ -546,6 +546,21 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const width = Math.max(20, cols - 4);
   const lines = useMemo(() => {
     const out: Line[] = [];
+    // The banner is scrollback, not chrome — it scrolls away like any other
+    // content, and the cat only renders when the terminal is wide enough.
+    out.push(...headerLines(width, CAT_ROWS, {
+      version,
+      name: account ? (account.name ?? account.email) : null,
+      plan: account
+        ? `${account.tier.charAt(0).toUpperCase()}${account.tier.slice(1)}${account.credits !== null ? ` · ${account.credits} credits` : ""}`
+        : null,
+      email: account?.email ?? null,
+      cwd,
+      notes: RELEASE_NOTES.length ? RELEASE_NOTES : [server.replace(/^https?:\/\//, "")],
+    }));
+    if (items.length === 0) {
+      out.push({ text: "Ask Glyphh anything, or type /help. Ctrl+C to quit.", style: "hint" });
+    }
     for (const item of items) {
       if (item.kind === "user") out.push(...userLines(item.text, width));
       else if (item.kind === "command") out.push(...commandLines(item.text, item.result, width));
@@ -556,9 +571,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       else out.push(...noteLines(item.text));
     }
     return out;
-  }, [items, expanded, width]);
+  }, [items, expanded, width, version, account, cwd, server]);
 
-  const paneH = Math.max(3, rows - 1 - chromeH.header - chromeH.strip);
+  const paneH = Math.max(3, rows - 1 - chromeH.strip);
   const maxScroll = Math.max(0, lines.length - paneH);
   const clampedScroll = Math.min(scroll, maxScroll);
   const start = Math.max(0, lines.length - paneH - clampedScroll);
@@ -646,20 +661,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
-      <Box flexDirection="column" flexShrink={0} ref={headerBox}>
-        <Header width={cols} version={version} account={account} notes={RELEASE_NOTES} server={server} cwd={cwd} />
-      </Box>
-      {/* The scroll surface. minHeight={0} is load-bearing: a flexGrow child
-          defaults to min-height:auto (its content size), so without this it
-          refuses to shrink and PUSHES the footer past the terminal — the
-          "footer scrolls away" bug. With it, the box clips (overflow hidden)
-          and the footer stays pinned no matter how long the transcript grows. */}
+      {/* ONE scroll surface — the banner is its first content, so the whole
+          page above the strip scrolls. minHeight={0} is load-bearing: a
+          flexGrow child defaults to min-height:auto (its content size), so
+          without this it refuses to shrink and PUSHES the footer past the
+          terminal — the "footer scrolls away" bug. With it, the box clips
+          (overflow hidden) and the footer stays pinned no matter how long
+          the transcript grows. */}
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} paddingX={1} overflow="hidden">
-        {visible.length === 0 ? (
-          <Text color={theme.faint}>Ask Glyphh anything, or type /help. Ctrl+C to quit.</Text>
-        ) : (
-          visible.map((l, i) => <TranscriptLine key={`${start + i}`} line={l} />)
-        )}
+        {visible.map((l, i) => <TranscriptLine key={`${start + i}`} line={l} />)}
       </Box>
       {clampedScroll > 0 ? (
         <Text color={theme.faint}>{`  ↓ ${clampedScroll} lines below · ↑/↓ scrolls · pgdn returns`}</Text>
