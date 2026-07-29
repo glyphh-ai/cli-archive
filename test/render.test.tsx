@@ -10,7 +10,6 @@
 import React from "react";
 import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
-import { Header } from "../src/components/Header.js";
 import { InputBar } from "../src/components/InputBar.js";
 import { Footer } from "../src/components/Footer.js";
 import { SubFooter } from "../src/components/SubFooter.js";
@@ -20,28 +19,36 @@ import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/th
 import { openBrowser } from "../src/open-browser.js";
 import { isReadOnlyTool, connectionAuthHint } from "../src/components/App.js";
 import { CAT_ROWS } from "../src/banner.js";
-import { answerLines, commandLines, sectionLines, userLines } from "../src/lines.js";
+import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
 
-const account = { email: "chris@glyphh.ai", name: "Chris", tier: "pro", credits: 812 };
-const notes = ["Full-screen chat TUI", "Slash commands: /login /status"];
-
 describe("TUI layout", () => {
-  it("header: version in the outline, cat, stacked account, and What's new panel", () => {
-    // 120 cols → the 1/4 left panel (~30) fits the account lines without truncation.
-    const { lastFrame } = render(
-      <Header width={120} version="v1.0.0" account={account} notes={notes} server="https://api.glyphh.ai" cwd="~/development/yo" />,
-    );
-    const frame = lastFrame()!;
-    expect(frame).toContain("Glyphh v1.0.0"); // version in the border
-    expect(frame).toContain("┌─"); // the hand-drawn outline
-    expect(frame).toContain(CAT_ROWS[1]!.trim().slice(0, 2)); // some cat braille rendered
-    expect(frame).toContain("Chris");
-    expect(frame).toContain("Pro"); // plan, title-cased
-    expect(frame).toContain("812 credits");
-    expect(frame).toContain("~/development/yo"); // cwd under the account
-    expect(frame).toContain("What's new"); // right panel header
-    expect(frame).toContain("Full-screen chat TUI"); // a release note
+  it("banner lines: version in the outline, cat, account, What's new — cat hidden when narrow", () => {
+    const info = {
+      version: "v1.0.0",
+      name: "Chris",
+      plan: "Pro · 812 credits",
+      email: "chris@glyphh.ai",
+      cwd: "~/development/yo",
+      notes: ["Full-screen chat TUI", "Slash commands: /login /status"],
+    };
+    const wide = headerLines(100, CAT_ROWS, info).map((l) => l.text).join("\n");
+    expect(wide).toContain("Glyphh v1.0.0"); // version in the border
+    expect(wide).toContain("┌─"); // the hand-drawn outline
+    expect(wide).toContain(CAT_ROWS[1]!.trim().slice(0, 2)); // some cat braille rendered
+    expect(wide).toContain("Chris");
+    expect(wide).toContain("Pro · 812 credits");
+    expect(wide).toContain("~/development/yo"); // cwd under the account
+    expect(wide).toContain("What's new"); // right panel header
+    expect(wide).toContain("Full-screen chat TUI"); // a release note
+    // Narrow terminal: one column, and NO cat — braille art can't downscale,
+    // so hiding beats mangling.
+    const narrow = headerLines(48, CAT_ROWS, info).map((l) => l.text).join("\n");
+    expect(narrow).toContain("Glyphh v1.0.0");
+    expect(narrow).not.toContain(CAT_ROWS[1]!.trim().slice(0, 2));
+    expect(narrow).toContain("What's new");
+    // Every line fits the width — nothing to wrap or trash.
+    for (const l of headerLines(48, CAT_ROWS, info)) expect([...l.text].length).toBeLessThanOrEqual(48);
   });
 
   it("input bar shows the typed text and a Send button", () => {
