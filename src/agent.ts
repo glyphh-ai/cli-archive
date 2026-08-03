@@ -21,8 +21,8 @@ import { join } from "node:path";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Client } from "@glyphh/client";
-import { startInterceptor, type Interceptor } from "@glyphh/client/runtime";
+import type { Client } from "@glyphh/sdk";
+import { startInterceptor, type Interceptor } from "@glyphh/sdk/runtime";
 
 /** App-owned config home for the agent subprocess (never ~/.claude) — and
  *  PER CLI INSTANCE: every launch is its own agent session, fully isolated

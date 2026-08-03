@@ -12,9 +12,9 @@
  * naturally takes precedence over this host when both are up.
  */
 
-import type { Client } from "@glyphh/client";
-import { startAttachHost, type AttachHost } from "@glyphh/client/runtime";
-import { listInstalledApps, findInstalledApp, launchInstalledApp, openUrl } from "@glyphh/client/machine";
+import type { Client } from "@glyphh/sdk";
+import { startAttachHost, type AttachHost } from "@glyphh/sdk/runtime";
+import { listInstalledApps, findInstalledApp, launchInstalledApp, openUrl } from "@glyphh/sdk/machine";
 
 let host: AttachHost | null = null;
 

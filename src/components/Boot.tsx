@@ -12,7 +12,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import type { Client } from "@glyphh/client";
+import type { Client } from "@glyphh/sdk";
 import { App } from "./App.js";
 import { Login } from "./Login.js";
 import { ThemePicker } from "./ThemePicker.js";

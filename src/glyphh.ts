@@ -1,7 +1,7 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * glyphh.ts — the TUI's single seam onto @glyphh/client. Builds a client bound to the
+ * glyphh.ts — the TUI's single seam onto @glyphh/sdk. Builds a client bound to the
  * SAME on-disk session the `glyphh` CLI uses (~/.glyphh/session.json), loads who-am-I,
  * and opens a loop session to stream turns. Every capability the TUI shows is an SDK
  * call — the TUI is a thin view, never its own API client.
@@ -10,8 +10,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { createClient, staticTokenProvider, type Client, type Identity } from "@glyphh/client";
-import { FileTokenStore } from "@glyphh/client/storage/file";
+import { createClient, staticTokenProvider, type Client, type Identity } from "@glyphh/sdk";
+import { FileTokenStore } from "@glyphh/sdk/storage/file";
 
 export interface Account {
   email: string;

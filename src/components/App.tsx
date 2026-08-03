@@ -19,10 +19,10 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
-import type { Client } from "@glyphh/client";
+import type { Client } from "@glyphh/sdk";
 import { runAgentTurn } from "../agent.js";
 // Live model switches (/use) audit + layer in via the SDK override store.
-import { sessionOverrides } from "@glyphh/client/runtime";
+import { sessionOverrides } from "@glyphh/sdk/runtime";
 import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
 import { CAT_ROWS } from "../banner.js";
 import { InputBar } from "./InputBar.js";

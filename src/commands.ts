@@ -12,9 +12,9 @@
  * footer shows and what a turn runs cannot drift apart.
  */
 
-import type { Client } from "@glyphh/client";
-import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/client/models";
-import { switchModel } from "@glyphh/client/runtime";
+import type { Client } from "@glyphh/sdk";
+import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/sdk/models";
+import { switchModel } from "@glyphh/sdk/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
 import { openBrowser } from "./open-browser.js";
 import { readPrefs, selectionsFor, setSelection } from "./prefs.js";
@@ -300,7 +300,7 @@ const COMMANDS: SlashCommand[] = [
 
 /** The "What's new" panel copy (also shown by `/release-notes`). */
 export const RELEASE_NOTES: string[] = [
-  "Full-screen chat TUI over @glyphh/client",
+  "Full-screen chat TUI over @glyphh/sdk",
   "Per-turn credits + duration on every answer",
   "Slash commands: /login /status /loop /help",
   "Shift+Tab cycles the permission mode",

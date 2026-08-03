@@ -1,6 +1,6 @@
 # @glyphh-ai/cli
 
-The Glyphh full-screen chat **TUI** — a thin client over [`@glyphh/client`](../sdk).
+The Glyphh full-screen chat **TUI** — a thin client over [`@glyphh/sdk`](../sdk).
 
 ```
 ┌─ Glyphh v1.0.0 ──────────────────────────────────────────────────────────┐

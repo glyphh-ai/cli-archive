@@ -2,7 +2,7 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * banner.ts — the Glyphh mascot in white braille, byte-identical to the shared shell
- * banner (glyphh-rotor's glyphh_rotor/banner.py, mirrored in @glyphh/client). The header
+ * banner (glyphh-rotor's glyphh_rotor/banner.py, mirrored in @glyphh/sdk). The header
  * shows JUST THE CAT — the left columns of the full logo, with the "GLYPHH" wordmark
  * cropped away (the outlined header already carries the wordmark as its title).
  */

@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import Spinner from "ink-spinner";
-import type { Client } from "@glyphh/client";
+import type { Client } from "@glyphh/sdk";
 import { theme } from "../theme.js";
 import { CAT_ROWS } from "../banner.js";
 import { openBrowser } from "../open-browser.js";
