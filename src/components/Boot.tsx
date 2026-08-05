@@ -31,11 +31,13 @@ export interface BootProps {
   /** The late-bound box main.tsx gave the client's onSignedOut — Boot registers the
    *  reaction here: when the refresh chain dies MID-SESSION, drop to the login gate. */
   authLost?: { handler?: () => void };
+  /** `--thread <id>` — the chat resumes this saved server thread. */
+  resumeThreadId?: string;
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, loop, authLost }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, loop, authLost, resumeThreadId }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -112,6 +114,16 @@ export function Boot({ client, version, server, cwd, loop, authLost }: BootProps
   if (phase === "login") return <Login client={client} onAuthed={onAuthed} />;
   if (phase === "theme") return <ThemePicker current={readPrefs().theme} onPick={onPickTheme} />;
   return (
-    <App key={epoch} client={client} version={version} server={server} cwd={cwd} loop={loop} initialAccount={account} onRelogin={onRelogin} />
+    <App
+      key={epoch}
+      client={client}
+      version={version}
+      server={server}
+      cwd={cwd}
+      loop={loop}
+      initialAccount={account}
+      onRelogin={onRelogin}
+      {...(resumeThreadId ? { resumeThreadId } : {})}
+    />
   );
 }

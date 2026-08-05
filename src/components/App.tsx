@@ -42,6 +42,7 @@ import { headerLines,
   userLines,
   type Line,
 } from "../lines.js";
+import { ThreadSync, mintThreadId, conversationOf, THREAD_ID_RE } from "../threads.js";
 import type { ChatTurn, Item, PermissionMode } from "../types.js";
 
 const MODES: PermissionMode[] = ["ask", "auto", "plan", "read-only"];
@@ -109,9 +110,12 @@ export interface AppProps {
   /** Drop back to the interactive login screen — /login reuses the boot flow so it
    *  gets the same "press enter to open the browser" UX (and Google option). */
   onRelogin?: () => void;
+  /** Resume a server thread (`glyphh --thread <id>`): its messages seed the transcript
+   *  and new turns keep appending to the SAME thread. */
+  resumeThreadId?: string;
 }
 
-export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin, resumeThreadId }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -232,6 +236,75 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     inputRef.current = fn(inputRef.current);
     setInput(inputRef.current);
   }, []);
+
+  // ── The server thread: every chat lives in the SAME store web + desktop render
+  //    (/api/sessions/threads). Minted up front; pushed at each turn end; a server
+  //    that's away warns once and the next turn's push carries the backlog. ──
+  const syncEvents = useMemo(
+    () => ({ onOffline: (text: string) => push({ kind: "note", text }) }),
+    [push],
+  );
+  const threadSync = useRef<ThreadSync | null>(null);
+  if (threadSync.current === null) {
+    // A resumed thread starts BLOCKED (awaitSeed) — pushing before the server's
+    // copy lands would replace-set the thread down to just the new turns.
+    threadSync.current = resumeThreadId
+      ? new ThreadSync(client, resumeThreadId, syncEvents, { awaitSeed: true })
+      : new ThreadSync(client, mintThreadId(), syncEvents);
+  }
+
+  /** Seed the transcript + model history from a loaded thread's plain turns. */
+  const seedConversation = useCallback(
+    (msgs: Array<{ role: "user" | "assistant"; text: string }>) => {
+      history.current = [...msgs.map((m) => ({ role: m.role, content: m.text })), ...history.current];
+      for (const m of msgs) push(m.role === "user" ? { kind: "user", text: m.text } : { kind: "answer", text: m.text });
+    },
+    [push],
+  );
+
+  // `--thread <id>`: load the thread's messages, seed the TUI, keep appending to it.
+  useEffect(() => {
+    if (!resumeThreadId) return;
+    let cancelled = false;
+    void (async () => {
+      const sync = threadSync.current;
+      try {
+        const t = await client.sessions.thread(resumeThreadId);
+        if (cancelled || !sync) return;
+        sync.seedResumed(t);
+        seedConversation(conversationOf(t.messages));
+        push({ kind: "meta", text: `* Resumed "${t.title}" · ${t.messages.length} message${t.messages.length === 1 ? "" : "s"}` });
+      } catch (err) {
+        if (cancelled || !sync) return;
+        // Unreadable (offline / not yours / gone) — re-aim at a FRESH id so a
+        // later push can never clobber a thread we never read.
+        sync.failResume(mintThreadId());
+        push({ kind: "note", text: `Couldn't load thread ${resumeThreadId} (${(err as Error).message}) — starting a fresh chat.` });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [client, resumeThreadId, push, seedConversation]);
+
+  /** `/threads <id>` — swap this chat for a saved one, in place. */
+  const resumeThread = useCallback(
+    async (id: string): Promise<string[]> => {
+      if (!THREAD_ID_RE.test(id)) throw new Error(`bad thread id: ${id}`);
+      const t = await client.sessions.thread(id); // throws → the command surface reports it
+      history.current = [];
+      setItems([]);
+      setExpanded(false);
+      setScroll(0);
+      setLast(undefined);
+      const sync = new ThreadSync(client, id, syncEvents, { awaitSeed: true });
+      sync.seedResumed(t);
+      threadSync.current = sync;
+      const convo = conversationOf(t.messages);
+      seedConversation(convo);
+      push({ kind: "meta", text: `* Resumed "${t.title}" · ${t.messages.length} message${t.messages.length === 1 ? "" : "s"}` });
+      return [`resumed "${t.title}"`];
+    },
+    [client, push, seedConversation, syncEvents],
+  );
 
   const setLoop = useCallback((l: string) => {
     modelRef.current = { loop: null, id: null }; // re-resolve for the new loop
@@ -461,6 +534,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           // follow-up ("continue") has the context.
           history.current.push({ role: "user", content: prompt });
           history.current.push({ role: "assistant", content: text || "…" });
+          // Mirror the turn into the server thread (CodeMsg-shaped, verbatim) and
+          // push the replace-set — ONE push per completed turn, never per token.
+          // `push` never throws: offline goes quiet and retries at the next turn.
+          const sync = threadSync.current;
+          if (sync) {
+            sync.append({ role: "user", text: prompt, at: startedAt });
+            sync.append({ role: "assistant", text: text || "…", at: Date.now() });
+            void sync.push();
+          }
           if (turn.status !== "error") turn.status = stopped ? "stopped" : "done";
         }
         turn.durationMs = Date.now() - startedAt;
@@ -512,6 +594,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           setExpanded(false);
           setScroll(0);
           setLast(undefined);
+          // A cleared transcript is a NEW conversation — pushing the old thread's
+          // replace-set from an empty transcript would wipe it, so re-aim first.
+          threadSync.current = new ThreadSync(client, mintThreadId(), syncEvents);
         },
         quit: () => exit(),
         ...(onRelogin ? { relogin: onRelogin } : {}),
@@ -521,11 +606,13 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         invalidateModels: () => {
           modelRef.current = { loop: null, id: null };
         },
+        threadId: threadSync.current?.id ?? "",
+        resumeThread,
       };
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version, onRelogin],
+    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version, onRelogin, resumeThread, syncEvents],
   );
 
   const submit = useCallback(() => {

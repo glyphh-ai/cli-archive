@@ -43,6 +43,10 @@ export interface CommandCtx {
   sessionId: string;
   /** Drop the cached model registry so the next turn re-resolves (after a selection switch). */
   invalidateModels?: () => void;
+  /** THIS chat's server thread id (the store web + desktop also render). */
+  threadId: string;
+  /** Swap the chat for a saved thread, in place (loads messages, reseeds the TUI). */
+  resumeThread: (id: string) => Promise<string[]>;
 }
 
 export interface SlashCommand {
@@ -60,6 +64,15 @@ function planLabel(tier: string): string {
 /** Strip a catalog id's `provider::` prefix down to the bare model id for display. */
 function bareId(modelId: string): string {
   return modelId.split("::").pop() ?? modelId;
+}
+
+/** Compact "how long ago" for the threads list (epoch ms → `3h ago`). EXPORTED for tests. */
+export function agoLabel(atMs: number, now: number = Date.now()): string {
+  const s = Math.max(0, (now - atMs) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 const COMMANDS: SlashCommand[] = [
@@ -244,6 +257,26 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: "threads",
+    aliases: ["resume", "sessions"],
+    summary: "list your saved chats, or resume one: /threads <id>",
+    usage: "/threads [id]",
+    async run(ctx, args) {
+      const id = args[0];
+      if (id) return ctx.resumeThread(id);
+      const threads = await ctx.client.sessions.threads();
+      if (!threads.length) return ["no saved chats yet — finish a turn and this chat lands in your threads"];
+      const lines = ["saved chats (newest first):"];
+      for (const t of threads.slice(0, 15)) {
+        const mark = t.id === ctx.threadId ? "  ← this chat" : "";
+        lines.push(`  ${t.id}  ${agoLabel(t.updatedAt)}  ${t.title} · ${t.messageCount} msg${mark}`);
+      }
+      if (threads.length > 15) lines.push(`  … ${threads.length - 15} more (glyphh threads list)`);
+      lines.push("resume:  /threads <id>    (or launch with:  glyphh --thread <id>)");
+      return lines;
+    },
+  },
+  {
     name: "theme",
     summary: "list themes, or switch: /theme <name>",
     usage: "/theme [name]",
@@ -300,10 +333,10 @@ const COMMANDS: SlashCommand[] = [
 
 /** The "What's new" panel copy (also shown by `/release-notes`). */
 export const RELEASE_NOTES: string[] = [
-  "Full-screen chat TUI over @glyphh/sdk",
+  "Chats save to your Glyphh threads — the same",
+  "history web + desktop show. /threads lists,",
+  "/threads <id> resumes (or glyphh --thread <id>)",
   "Per-turn credits + duration on every answer",
-  "Slash commands: /login /status /loop /help",
-  "Shift+Tab cycles the permission mode",
 ];
 
 const BY_NAME = new Map<string, SlashCommand>();

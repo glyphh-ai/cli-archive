@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { render } from "ink";
 import { Boot } from "./components/Boot.js";
 import { makeClient, serverUrl } from "./glyphh.js";
+import { THREAD_ID_RE } from "./threads.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
 // The loop to open with. `GLYPHH_ROTOR` is honored for back-compat; the built-in
@@ -33,7 +34,22 @@ function leaveFullScreen(): void {
   process.stdout.write("\x1b[?25h\x1b[?1049l"); // show cursor + restore screen
 }
 
+/** `--thread <id>` — resume a saved server thread (see `/threads` in-app, or
+ *  `glyphh threads list`). Validated BEFORE the alternate screen takes over so a
+ *  typo'd id fails loudly instead of opening a chat that silently forked. */
+function parseThreadArg(argv: string[]): string | undefined {
+  const i = argv.indexOf("--thread");
+  if (i < 0) return undefined;
+  const id = argv[i + 1];
+  if (!id || !THREAD_ID_RE.test(id)) {
+    process.stderr.write("glyphh: --thread needs a thread id (see /threads in the app, or `glyphh threads list`)\n");
+    process.exit(2);
+  }
+  return id;
+}
+
 function main(): void {
+  const resumeThreadId = parseThreadArg(process.argv.slice(2));
   // The sign-out handler is LATE-BOUND: the client must exist before Boot renders,
   // but Boot owns the reaction (drop to the login gate). Boot registers into this box.
   const authLost: { handler?: () => void } = {};
@@ -49,7 +65,15 @@ function main(): void {
   process.on("exit", restore);
 
   const { waitUntilExit } = render(
-    <Boot client={client} version={VERSION} server={serverUrl()} cwd={displayCwd()} loop={LOOP} authLost={authLost} />,
+    <Boot
+      client={client}
+      version={VERSION}
+      server={serverUrl()}
+      cwd={displayCwd()}
+      loop={LOOP}
+      authLost={authLost}
+      {...(resumeThreadId ? { resumeThreadId } : {})}
+    />,
   );
   waitUntilExit()
     .then(restore)
