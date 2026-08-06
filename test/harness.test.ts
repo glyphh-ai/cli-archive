@@ -12,9 +12,12 @@ import { describe, it, expect } from "vitest";
 import type { Client, HarnessClient, HarnessWireFrame } from "@glyphh/sdk";
 import {
   runHarnessTurn,
+  resolveHarnessHost,
+  resetHarnessHost,
+  reachableFromPod,
   harnessPermission,
   cliSystemPrompt,
-  localHarnessEnabled,
+  type HarnessHost,
   type HarnessTurnHandlers,
 } from "../src/harness.js";
 
@@ -121,6 +124,22 @@ function fakePod(script: Scripted[]): FakePod {
 
 const client = { token: async () => "gy_at_test" } as unknown as Client;
 
+/** A control plane whose `sessions.create` provisions a ready cloud runtime. */
+function cloudClient(over: { status?: string; runtimeUrl?: string | null } = {}): Client {
+  const session = {
+    id: "sess_1",
+    status: over.status ?? "ready",
+    runtimeUrl: over.runtimeUrl === undefined ? "https://pod-1.glyphh.run" : over.runtimeUrl,
+  };
+  return {
+    token: async () => "gy_at_test",
+    sessions: {
+      create: async () => ({ session, runtimeToken: "gy_rk_cloud" }),
+      get: async () => session,
+    },
+  } as unknown as Client;
+}
+
 function handlers(): { h: HarnessTurnHandlers; log: string[] } {
   const log: string[] = [];
   const h: HarnessTurnHandlers = {
@@ -145,7 +164,7 @@ const turn = (pod: FakePod, h: HarnessTurnHandlers, over: Record<string, unknown
       prompt: "hi",
       cwd: "/tmp/work",
       permission: "ask",
-      ensurePod: async () => ({ url: "http://127.0.0.1:51234" }),
+      host: { kind: "local", url: "http://127.0.0.1:51234" } as HarnessHost,
       openHarness: () => pod.client,
       mintGrant: async () => "gy_mt_test",
       ...over,
@@ -312,12 +331,22 @@ describe("harness turn", () => {
     expect(res.stopped).toBe(false);
   });
 
-  it("a pod that won't start reports ONE actionable message, never a crash", async () => {
+  it("NO host at all reports ONE actionable message naming both attempts", async () => {
+    resetHarnessHost();
     const pod = fakePod([]);
     const { h } = handlers();
+    const failing = {
+      token: async () => "gy_at_test",
+      sessions: { create: async () => { throw new Error("402 out of credits"); } },
+    } as unknown as Client;
     await expect(
-      turn(pod, h, { ensurePod: () => Promise.reject(new Error("spawn rrotor ENOENT")) }),
-    ).rejects.toThrow(/harness couldn't start.*ENOENT.*GLYPHH_LOCAL_ROTOR_CMD/s);
+      turn(pod, h, {
+        host: undefined,
+        client: failing,
+        ensurePod: () => Promise.reject(new Error("spawn rrotor ENOENT")),
+      }),
+    ).rejects.toThrow(/no Glyphh harness is available.*ENOENT.*402 out of credits/s);
+    resetHarnessHost();
   });
 
   it("a renderer that throws never takes the run down", async () => {
@@ -333,12 +362,152 @@ describe("harness turn", () => {
   });
 });
 
-describe("the flag", () => {
-  it("is OFF unless GLYPHH_LOCAL_ROTOR=1 (the pod's gate doesn't enforce yet)", () => {
-    expect(localHarnessEnabled({})).toBe(false);
-    expect(localHarnessEnabled({ GLYPHH_LOCAL_ROTOR: "0" })).toBe(false);
-    expect(localHarnessEnabled({ GLYPHH_LOCAL_ROTOR: "true" })).toBe(false);
-    expect(localHarnessEnabled({ GLYPHH_LOCAL_ROTOR: "1" })).toBe(true);
+describe("host selection", () => {
+  const base = {
+    server: "https://api.glyphh.ai",
+    model: "m",
+    threadId: "c1",
+    history: [],
+    prompt: "hi",
+    permission: "auto" as const,
+  };
+
+  it("prefers the LOCAL pod when one starts", async () => {
+    resetHarnessHost();
+    const host = await resolveHarnessHost({
+      ...base,
+      client,
+      ensurePod: async () => ({ url: "http://127.0.0.1:1" }),
+    });
+    expect(host).toEqual({ kind: "local", url: "http://127.0.0.1:1" });
+    resetHarnessHost();
+  });
+
+  it("falls to the CLOUD runtime when no local pod can start", async () => {
+    resetHarnessHost();
+    const host = await resolveHarnessHost({
+      ...base,
+      client: cloudClient(),
+      ensurePod: () => Promise.reject(new Error("no rrotor")),
+    });
+    expect(host).toEqual({
+      kind: "cloud",
+      url: "https://pod-1.glyphh.run",
+      token: "gy_rk_cloud",
+      sessionId: "sess_1",
+    });
+    resetHarnessHost();
+  });
+
+  it("decides ONCE per session — the second turn never re-probes", async () => {
+    resetHarnessHost();
+    let probes = 0;
+    const opts = {
+      ...base,
+      client: cloudClient(),
+      ensurePod: () => {
+        probes++;
+        return Promise.reject(new Error("no rrotor"));
+      },
+    };
+    const a = await resolveHarnessHost(opts);
+    const b = await resolveHarnessHost(opts);
+    expect(probes).toBe(1); // no retry-storm across turns
+    expect(b).toEqual(a);
+    resetHarnessHost();
+  });
+
+  it("does NOT cache a total failure — the next turn tries again", async () => {
+    resetHarnessHost();
+    let probes = 0;
+    const dead = {
+      token: async () => "t",
+      sessions: { create: async () => { throw new Error("offline"); } },
+    } as unknown as Client;
+    const opts = {
+      ...base,
+      client: dead,
+      ensurePod: () => {
+        probes++;
+        return Promise.reject(new Error("no rrotor"));
+      },
+    };
+    await expect(resolveHarnessHost(opts)).rejects.toThrow(/no Glyphh harness/);
+    await expect(resolveHarnessHost(opts)).rejects.toThrow(/no Glyphh harness/);
+    expect(probes).toBe(2);
+    resetHarnessHost();
+  });
+
+  it("waits for a provisioning runtime, and refuses one that never readies", async () => {
+    resetHarnessHost();
+    await expect(
+      resolveHarnessHost({
+        ...base,
+        client: cloudClient({ status: "failed", runtimeUrl: null }),
+        ensurePod: () => Promise.reject(new Error("no rrotor")),
+      }),
+    ).rejects.toThrow(/runtime failed/);
+    resetHarnessHost();
+  });
+});
+
+describe("the cloud path", () => {
+  const cloud: HarnessHost = { kind: "cloud", url: "https://pod-1.glyphh.run", token: "gy_rk_cloud", sessionId: "sess_1" };
+
+  it("sends NO workdir, NO gatewayUrl and NO runtimeToken — the pod is itself", async () => {
+    const pod = fakePod([frame({ type: "done", stopped: false })]);
+    const { h } = handlers();
+    await turn(pod, h, { host: cloud, server: "https://api.glyphh.ai" });
+    expect(pod.body).not.toHaveProperty("workdir");   // the cloud pod 400s a host path
+    expect(pod.body).not.toHaveProperty("gatewayUrl"); // it carries its own
+    expect(pod.body).not.toHaveProperty("runtimeToken");
+    expect(pod.body).toMatchObject({ sessionId: "sess_1" });
+  });
+
+  it("says ONCE that the session is cloud-backed and the files aren't local", async () => {
+    resetHarnessHost();
+    const { h, log } = handlers();
+    const over = { host: cloud, server: "https://api.glyphh.ai" };
+    await turn(fakePod([frame({ type: "done", stopped: false })]), h, over);
+    await turn(fakePod([frame({ type: "done", stopped: false })]), h, over);
+    const notes = log.filter((l) => /Running on the Glyphh cloud runtime/.test(l));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/NOT in this folder/);
+    resetHarnessHost();
+  });
+
+  it("stays SILENT for a local session — nothing changed for the user", async () => {
+    resetHarnessHost();
+    const { h, log } = handlers();
+    await turn(fakePod([frame({ type: "done", stopped: false })]), h);
+    expect(log.filter((l) => l.startsWith("note:"))).toEqual([]);
+    resetHarnessHost();
+  });
+
+  it("won't lend a control plane the pod can't reach (and says why)", async () => {
+    const pod = fakePod([frame({ type: "done", stopped: false })]);
+    const { h, log } = handlers();
+    await turn(pod, h, { host: cloud, server: "http://127.0.0.1:3001" });
+    expect(pod.body).not.toHaveProperty("mcpServers");
+    expect(log.some((l) => /only reachable from your machine/.test(l))).toBe(true);
+  });
+
+  it("DOES lend a public control plane to a cloud pod", async () => {
+    const pod = fakePod([frame({ type: "done", stopped: false })]);
+    const { h } = handlers();
+    await turn(pod, h, { host: cloud, server: "https://api.glyphh.ai" });
+    expect(pod.body!.mcpServers).toEqual([
+      { name: "platform", url: "https://api.glyphh.ai/mcp", headers: { authorization: "Bearer gy_mt_test" } },
+    ]);
+  });
+
+  it("knows which control planes a remote pod can dial", () => {
+    const local: HarnessHost = { kind: "local", url: "http://127.0.0.1:1" };
+    expect(reachableFromPod("http://127.0.0.1:3001", local)).toBe(true); // shares the machine
+    expect(reachableFromPod("https://api.glyphh.ai", cloud)).toBe(true);
+    for (const s of ["http://127.0.0.1:3001", "http://localhost:3001", "http://192.168.1.5:3001", "http://10.0.0.2", "http://mac.local"]) {
+      expect(reachableFromPod(s, cloud)).toBe(false);
+    }
   });
 });
 
@@ -351,12 +520,23 @@ describe("permission mapping", () => {
     expect(harnessPermission("read-only")).toBe("plan");
   });
 
-  it("the system prompt keeps the agent honest about where the user is", () => {
-    const p = cliSystemPrompt("/Users/me/project");
+  it("the LOCAL system prompt says the cwd is the user's real folder", () => {
+    const p = cliSystemPrompt("local", "/Users/me/project");
     expect(p).toContain("/Users/me/project");
     expect(p).toMatch(/relative path/i); // the run is anchored there
     expect(p).toMatch(/real folder/i);   // …and it's the user's own, not a sandbox
     expect(p).toMatch(/ask_user/);
-    expect(cliSystemPrompt()).toMatch(/working directory/i);
+  });
+
+  it("the CLOUD system prompt refuses to pretend it can touch the user's machine", () => {
+    const p = cliSystemPrompt("cloud", "/Users/me/project");
+    expect(p).toMatch(/CLOUD SANDBOX/);
+    expect(p).toMatch(/cannot read or write/i);   // their folder is out of reach
+    expect(p).toMatch(/never claim you changed something on their computer/i);
+  });
+
+  it("omits the Glyphh tool line when no surface was lent", () => {
+    expect(cliSystemPrompt("local", "/w", false)).not.toMatch(/mcp__platform__/);
+    expect(cliSystemPrompt("local", "/w")).toMatch(/mcp__platform__/);
   });
 });

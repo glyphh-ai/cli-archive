@@ -20,6 +20,7 @@ import { readPrefs, writePrefs } from "../prefs.js";
 import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { resetMcpGrant } from "../mcp-grant.js";
+import { resetHarnessHost } from "../harness.js";
 import { startMachineHost, stopMachineHost } from "../machine-host.js";
 
 export interface BootProps {
@@ -68,7 +69,8 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   useEffect(() => {
     if (!authLost) return;
     authLost.handler = () => {
-      resetMcpGrant(); // the /mcp grant died with the session
+      resetMcpGrant();     // the /mcp grant died with the session
+      resetHarnessHost(); // …and so did any cloud runtime provisioned for it
       stopMachineHost();
       setAccount(null);
       setPhase("login");
@@ -79,7 +81,8 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   }, [authLost]);
 
   const onAuthed = useCallback(() => {
-    resetMcpGrant(); // fresh session → fresh grant on the next turn
+    resetMcpGrant();     // fresh session → fresh grant on the next turn
+    resetHarnessHost(); // …and a freshly chosen host (local or cloud)
     void loadAccount(client).then((a) => {
       setAccount(a);
       if (a) startMachineHost(client, server, version);
@@ -92,6 +95,7 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   // success onAuthed bumps the epoch, so the App remounts on the fresh session.
   const onRelogin = useCallback(() => {
     resetMcpGrant();
+    resetHarnessHost();
     stopMachineHost();
     setAccount(null);
     setPhase("login");

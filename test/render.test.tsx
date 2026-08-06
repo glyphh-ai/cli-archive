@@ -17,7 +17,7 @@ import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
-import { toolLabel, argTitle, isReadOnlyTool, connectionAuthHint } from "../src/components/App.js";
+import { toolLabel, connectionAuthHint } from "../src/components/App.js";
 import { CAT_ROWS } from "../src/banner.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
@@ -202,35 +202,7 @@ describe("open browser", () => {
   });
 });
 
-describe("permission-gate classification", () => {
-  it("treats local read tools as read-only (no prompt)", () => {
-    for (const t of ["Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch"]) {
-      expect(isReadOnlyTool(t)).toBe(true);
-    }
-  });
-
-  it("treats Glyphh MCP read verbs as read-only", () => {
-    for (const t of ["list_apps", "get_app", "search_registry", "browse_marketplace", "desktop_native_apps_list"]) {
-      expect(isReadOnlyTool(t)).toBe(true);
-    }
-  });
-
-  it("NEVER classifies a mutating/exec tool as read-only (must prompt)", () => {
-    for (const t of ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit",
-      "create_app_entry", "deploy_app", "create_skill", "desktop_native_app_open",
-      "conn__gmail__gmail-send-email"]) {
-      expect(isReadOnlyTool(t)).toBe(false);
-    }
-  });
-});
-
 describe("tool receipts", () => {
-  it("inlines the embedded loop's key argument", () => {
-    expect(argTitle("Bash", { command: "mkdir -p src" })).toBe("Bash  mkdir -p src");
-    expect(argTitle("Write", { file_path: "/a/index.html" })).toBe("Write  /a/index.html");
-    expect(argTitle("list_apps", {})).toBe("list_apps");
-  });
-
   it("prefers the pod's human title, falls back to the tool name", () => {
     expect(toolLabel("Bash", "Run npm test")).toBe("Run npm test");
     expect(toolLabel("Bash", "  ")).toBe("Bash");

@@ -1,30 +1,33 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * harness.ts — THE CLI'S TURN ENGINE: one harness, everywhere.
+ * harness.ts — THE CLI'S TURN ENGINE: one harness, several hosts.
  *
- * A chat turn no longer runs an Agent SDK loop inside this process. It runs on
- * the MACHINE'S LOCAL HARNESS POD — rrotor in `ROTOR_MODE=harness`, auth off,
- * loopback-bound — the same pod the desktop drives and the same engine the
- * cloud provisions per session. The CLI is a renderer over the pod's frame
- * stream:
+ * A chat turn is not an Agent SDK loop inside this process. It runs on a
+ * HARNESS POD — rrotor in `ROTOR_MODE=harness` — and the CLI is a renderer over
+ * that pod's frame stream. Two hosts, decided ONCE per session ({@link resolveHarnessHost}):
  *
- *   ensureLocalHarnessPod()  → the machine's one pod (singleton lock/discovery/
- *                              detached spawn; the SDK's runtime supervisor)
- *   client.harness({url})    → the `glyphh.harness/v1` client
- *   .start(body)             → POST /run, then frames over WS (or polled)
- *   .answer(id, …)/.stop()   → resume a parked ask/approval; abort the run
+ *   LOCAL  the machine's own pod (auth off, loopback-bound), started/attached by
+ *          the SDK's runtime supervisor. Its cwd is the USER'S OWN FOLDER, and
+ *          each run carries the user's access token as `runtimeToken` so every
+ *          model call rides `${server}/api/gateway` — metered, never a personal
+ *          Anthropic login.
+ *   CLOUD  a provisioned shared runtime (`sessions.create` → `runtimeUrl` +
+ *          `runtimeToken`), exactly as the web opens one. Auth is ON, so the
+ *          pod carries its OWN gateway credential and we send neither
+ *          `runtimeToken` nor `gatewayUrl`. It runs in a cloud sandbox — NOT
+ *          the user's folder — and the transcript says so, once.
  *
- * The pod is LOCAL and auth-off, so it needs no bearer of its own: each run
- * carries the user's control-plane access token as `runtimeToken`, and every
- * model call inside the pod rides `${server}/api/gateway` with it — the metered
- * path, never a personal Anthropic login.
+ * Same wire either way: `.start(body)` → frames (WS, or polled when the socket
+ * can't carry a bearer) → `.answer(id, …)` for a parked ask/approval, `.stop()`
+ * to abort. Only the address and those two body fields differ.
  *
  * Persistence is NOT here: threads.ts still owns the server thread store (one
  * push per completed turn). This module only turns a prompt into frames.
  */
 
 import { ensureLocalHarnessPod } from "@glyphh/sdk/runtime";
+import { staticTokenProvider } from "@glyphh/sdk";
 import type {
   Client,
   HarnessAskQuestion,
@@ -38,9 +41,14 @@ import type {
 import { mintMcpGrant } from "./mcp-grant.js";
 import type { PermissionMode } from "./types.js";
 
-/** Loopback frame polling when this Node has no global `WebSocket` (< 21) —
- *  tight, because the pod is on this machine. With a socket it never polls. */
-const POLL_MS = 120;
+/** Frame polling when the socket path is unavailable (no global `WebSocket`, or
+ *  an auth-ON pod that rejects a header-less upgrade). Tight on loopback,
+ *  easier on a cloud pod we'd otherwise hammer. */
+const POLL_MS = { local: 120, cloud: 400 } as const;
+
+/** How long to wait for a freshly provisioned cloud runtime to come up. */
+const READY_POLL_MS = 1000;
+const READY_POLL_TRIES = 45;
 
 /** Micro-credits → whole credits (the server's `microToCredits`). */
 const MICRO = 1_000_000;
@@ -115,10 +123,12 @@ export interface HarnessTurnOptions {
   /** Esc — aborts the run (routed to the pod's `POST /runs/:id/stop`). */
   signal?: AbortSignal;
   // ── test seams ─────────────────────────────────────────────────────────────
-  /** Resolve the pod (default: the SDK's `ensureLocalHarnessPod`). */
+  /** Use THIS host instead of resolving one (tests; also lets a caller pin a host). */
+  host?: HarnessHost;
+  /** Start/attach the local pod (default: the SDK's `ensureLocalHarnessPod`). */
   ensurePod?: () => Promise<{ url: string }>;
-  /** Open the pod client (default: `client.harness({url})`). */
-  openHarness?: (url: string) => HarnessClient;
+  /** Open the pod client (default: `client.harness({url, token})`). */
+  openHarness?: (host: HarnessHost) => HarnessClient;
   /** Mint the `/mcp` bearer (default: the cached process-wide grant). */
   mintGrant?: () => Promise<string>;
 }
@@ -132,28 +142,94 @@ export interface HarnessTurnResult {
   error?: string;
 }
 
+/** WHERE a turn runs. Decided once per session by {@link resolveHarnessHost}. */
+export interface HarnessHost {
+  kind: "local" | "cloud";
+  /** The pod's base URL. */
+  url: string;
+  /** The pod's bearer. Absent for LOCAL (auth off); the provisioned
+   *  `runtimeToken` for CLOUD (auth on, introspected server-side). */
+  token?: string;
+  /** The provisioned session id (cloud only). */
+  sessionId?: string;
+}
+
+/** The session's host, once chosen. A rejected attempt is NOT cached — the next
+ *  turn re-tries, because "offline for a moment" must not poison the session. */
+let hostChoice: Promise<HarnessHost> | null = null;
+/** True once the transcript has been told which host is running this session. */
+let hostAnnounced = false;
+
+/** Forget the chosen host (a new sign-in gets a fresh runtime + a fresh line). */
+export function resetHarnessHost(): void {
+  hostChoice = null;
+  hostAnnounced = false;
+}
+
 /**
- * Is the local-harness chat path ON? DEFAULT OFF — flip with
- * `GLYPHH_LOCAL_ROTOR=1`.
- *
- * The BEHAVIOURAL blockers are gone (both verified live against a real model):
- * the pod's permission gate enforces — `plan` denies a Write with the model
- * re-planning and nothing on disk, `ask` PARKS on an `approval` frame that
- * (y)es runs and (n)o refuses — and a run is anchored at the user's own shell
- * directory (`workdir`), so a relative-path edit lands in their folder, not the
- * pod's sandbox. The server's governed tool surface is lent back to the pod
- * ({@link lentToolSurface}), so no capability is lost either.
- *
- * WHAT STILL BLOCKS THE FLIP: PACKAGING. Nothing ships `rrotor` to someone who
- * installed this CLI from npm — `@glyphh/rrotor` is not on the registry (404),
- * and the supervisor's fallbacks are `$GLYPHH_LOCAL_ROTOR_CMD`, `$GLYPHH_ROTOR_BIN`,
- * then `rrotor` on PATH. Defaulting to ON today turns EVERY turn into "the local
- * Glyphh harness couldn't start" for anyone outside this monorepo. Ship the pod
- * with the CLI (publish it, bundle it, or have the desktop installer put it on
- * PATH), then default this to on and delete agent.ts — nothing else is in the way.
+ * WHERE THIS SESSION RUNS — local pod if one is running or can be started,
+ * otherwise the shared cloud runtime. Decided ONCE and remembered: a session
+ * never switches engines mid-flight, and a machine without rrotor pays the
+ * supervisor's start timeout exactly once, not once per turn.
  */
-export function localHarnessEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.GLYPHH_LOCAL_ROTOR === "1";
+export async function resolveHarnessHost(opts: HarnessTurnOptions): Promise<HarnessHost> {
+  if (opts.host) return opts.host;
+  if (!hostChoice) {
+    hostChoice = pickHost(opts).catch((err: unknown) => {
+      hostChoice = null; // transient: let the next turn try again
+      throw err;
+    });
+  }
+  return hostChoice;
+}
+
+async function pickHost(opts: HarnessTurnOptions): Promise<HarnessHost> {
+  let localErr: unknown;
+  try {
+    const pod = opts.ensurePod ? await opts.ensurePod() : await ensureLocalHarnessPod();
+    return { kind: "local", url: pod.url };
+  } catch (err) {
+    localErr = err;
+  }
+  try {
+    return await provisionCloudPod(opts);
+  } catch (cloudErr) {
+    throw new Error(
+      `no Glyphh harness is available — local: ${(localErr as Error).message}; cloud: ${(cloudErr as Error).message}`,
+    );
+  }
+}
+
+/** Provision the shared cloud runtime, exactly as the web does: create, then
+ *  poll until it is `ready` and has a url. */
+async function provisionCloudPod(opts: HarnessTurnOptions): Promise<HarnessHost> {
+  const provisioned = await opts.client.sessions.create({ rotor: "default" });
+  const token = provisioned.runtimeToken;
+  let session = provisioned.session;
+  if (!token || !session?.id) throw new Error("provisioning returned no runtime");
+  for (let i = 0; session.status === "provisioning" && i < READY_POLL_TRIES; i++) {
+    await sleep(READY_POLL_MS);
+    session = await opts.client.sessions.get(session.id);
+  }
+  if (session.status !== "ready" || !session.runtimeUrl) {
+    throw new Error(`runtime ${session.status}${session.runtimeUrl ? "" : " (no runtime url)"}`);
+  }
+  return { kind: "cloud", url: session.runtimeUrl, token, sessionId: session.id };
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Say — ONCE per session, and only when it changes what the user should expect
+ *  — that this session is cloud-backed and its files are not in their folder. */
+function announceHost(host: HarnessHost, h: HarnessTurnHandlers): void {
+  if (hostAnnounced || host.kind === "local") {
+    hostAnnounced = true;
+    return;
+  }
+  hostAnnounced = true;
+  h.onNote?.(
+    "Running on the Glyphh cloud runtime — no local harness found. Work happens in a cloud sandbox, so files it creates are NOT in this folder.",
+  );
 }
 
 /** The TUI's four-mode chip → the harness's permission vocabulary. Both
@@ -171,49 +247,51 @@ export function harnessPermission(mode: PermissionMode): HarnessPermission {
 }
 
 /**
- * The CLI's system prompt. The run is ANCHORED at the user's shell directory
- * (the body's `workdir`), so "here" and every relative path already resolve
- * where the user expects — this just tells the agent that, and that it is
- * expected to do the work rather than dictate commands.
+ * The CLI's system prompt — HONEST ABOUT WHERE IT IS, because that changes what
+ * the agent may promise. A LOCAL run is anchored at the user's own shell
+ * directory (`workdir`), so "here" is their folder. A CLOUD run is in a remote
+ * sandbox that cannot see that folder at all, and saying otherwise would make
+ * the agent claim files the user will never find.
  */
-export function cliSystemPrompt(cwd?: string): string {
-  return [
-    "You are Glyphh, the user's agent, running on the user's OWN MACHINE and rendered in their terminal.",
-    cwd
-      ? `Your working directory IS the user's shell directory, ${cwd} — "here", "this project", and every relative path resolve there. It is their real folder, not a scratch sandbox: treat it with care.`
-      : "You are in the user's own working directory — relative paths resolve there.",
+export function cliSystemPrompt(kind: HarnessHost["kind"], cwd?: string, tools = true): string {
+  const parts = [
+    kind === "local"
+      ? "You are Glyphh, the user's agent, running on the user's OWN MACHINE and rendered in their terminal."
+      : "You are Glyphh, the user's agent, running in a Glyphh CLOUD SANDBOX and rendered in their terminal.",
+    kind === "local"
+      ? cwd
+        ? `Your working directory IS the user's shell directory, ${cwd} — "here", "this project", and every relative path resolve there. It is their real folder, not a scratch sandbox: treat it with care.`
+        : "You are in the user's own working directory — relative paths resolve there."
+      : `Your working directory is a REMOTE sandbox, not the user's machine${cwd ? ` (their terminal is in ${cwd}, which you cannot read or write)` : ""}. Files you create live only in the sandbox — never claim you changed something on their computer, and say so plainly if they ask you to.`,
     "You have Bash (shell), Read/Write/Edit (files), Glob/Grep (search) and WebFetch/WebSearch (the web). USE them to do the work — create the files, run the commands, read the pages. Never tell the user to paste a command into a terminal themselves; you are already in one.",
-    "You also have the user's Glyphh tools (mcp__platform__*): their apps, loops, skills, agents and governed connections.",
+  ];
+  if (tools) {
+    parts.push("You also have the user's Glyphh tools (mcp__platform__*): their apps, loops, skills, agents and governed connections.");
+  }
+  parts.push(
     "Use ask_user when a decision is genuinely the user's. When a tool errors, read the message and adapt rather than giving up.",
     "Answer directly and concisely.",
-  ].join(" ");
+  );
+  return parts.join(" ");
 }
 
 /** Cached pod clients, keyed by pod URL — one per process, not per turn. */
 const clients = new Map<string, HarnessClient>();
 
-function podClient(opts: HarnessTurnOptions, url: string): HarnessClient {
-  if (opts.openHarness) return opts.openHarness(url);
-  const hit = clients.get(url);
+function podClient(opts: HarnessTurnOptions, host: HarnessHost): HarnessClient {
+  if (opts.openHarness) return opts.openHarness(host);
+  const hit = clients.get(host.url);
   if (hit) return hit;
-  // No token: the LOCAL pod runs with auth off (it loopback-binds itself for
-  // exactly that reason). The gateway credential rides each run instead.
-  const made = opts.client.harness({ url, run: { pollMs: POLL_MS } });
-  clients.set(url, made);
+  // LOCAL needs no bearer (auth off — that is why it loopback-binds). CLOUD
+  // authorizes every request with the provisioned runtime token; its WS upgrade
+  // can't carry a header, so that path settles into polling the frames endpoint.
+  const made = opts.client.harness({
+    url: host.url,
+    ...(host.token ? { token: staticTokenProvider(host.token) } : {}),
+    run: { pollMs: POLL_MS[host.kind] },
+  });
+  clients.set(host.url, made);
   return made;
-}
-
-/** Start (or attach to) the machine's harness pod. Failure is REPORTED, never
- *  thrown raw: the caller turns it into one honest transcript line. */
-async function resolvePod(opts: HarnessTurnOptions): Promise<string> {
-  try {
-    const pod = opts.ensurePod ? await opts.ensurePod() : await ensureLocalHarnessPod();
-    return pod.url;
-  } catch (err) {
-    throw new Error(
-      `the local Glyphh harness couldn't start (${(err as Error).message}). Install rrotor, or point GLYPHH_LOCAL_ROTOR_CMD at a local build.`,
-    );
-  }
 }
 
 /**
@@ -227,8 +305,18 @@ async function resolvePod(opts: HarnessTurnOptions): Promise<string> {
  * sandbox toolset and says so once, rather than failing over a tool the user
  * may not even need.
  */
-async function lentToolSurface(opts: HarnessTurnOptions, h: HarnessTurnHandlers): Promise<HarnessMcpServerRef[]> {
+async function lentToolSurface(
+  opts: HarnessTurnOptions,
+  host: HarnessHost,
+  h: HarnessTurnHandlers,
+): Promise<HarnessMcpServerRef[]> {
   const base = opts.server.replace(/\/+$/, "");
+  if (!reachableFromPod(base, host)) {
+    // A remote pod dialing "127.0.0.1" would reach ITSELF, not our server —
+    // lending that would hand the run a surface that silently fails.
+    h.onNote?.("(your Glyphh tools aren't available on the cloud runtime: this control plane is only reachable from your machine)");
+    return [];
+  }
   try {
     const grant = opts.mintGrant ? await opts.mintGrant() : await mintMcpGrant(opts.client, base);
     // NOT "glyphh" — the pod reserves that name for its own ask_user server and
@@ -242,16 +330,39 @@ async function lentToolSurface(opts: HarnessTurnOptions, h: HarnessTurnHandlers)
   }
 }
 
+/** Can the POD reach our control plane? A local pod shares the machine, so
+ *  anything goes; a cloud pod needs a publicly routable host. */
+export function reachableFromPod(server: string, host: HarnessHost): boolean {
+  if (host.kind === "local") return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(server);
+  } catch {
+    return false;
+  }
+  const h = parsed.hostname;
+  return !(
+    h === "localhost" ||
+    h === "::1" ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    /\.local$/.test(h)
+  );
+}
+
 /**
- * Run ONE turn on the local harness pod. Streams through `h`; resolves with the
+ * Run ONE turn on this session's harness pod. Streams through `h`; resolves with the
  * terminal result. Throws only when the pod itself is unreachable — an `error`
  * FRAME resolves normally with `error` set (the run happened, and failed).
  */
 export async function runHarnessTurn(opts: HarnessTurnOptions, h: HarnessTurnHandlers): Promise<HarnessTurnResult> {
-  const url = await resolvePod(opts);
-  const harness = podClient(opts, url);
-  const runtimeToken = await opts.client.token();
-  const mcpServers = await lentToolSurface(opts, h);
+  const host = await resolveHarnessHost(opts);
+  announceHost(host, h);
+  const harness = podClient(opts, host);
+  const mcpServers = await lentToolSurface(opts, host, h);
+  const local = host.kind === "local";
 
   const run = harness.start({
     prompt: opts.prompt,
@@ -259,14 +370,18 @@ export async function runHarnessTurn(opts: HarnessTurnOptions, h: HarnessTurnHan
     mode: opts.mode ?? "code",
     model: opts.model,
     permission: harnessPermission(opts.permission),
-    system: cliSystemPrompt(opts.cwd),
+    system: cliSystemPrompt(host.kind, opts.cwd, mcpServers.length > 0),
     history: opts.history,
-    // The pod is LOCAL, so it honors a host path: anchor the run at the user's
-    // shell directory instead of the pod's per-session sandbox workspace.
-    ...(opts.cwd ? { workdir: opts.cwd } : {}),
     ...(mcpServers.length ? { mcpServers } : {}),
-    gatewayUrl: `${opts.server.replace(/\/+$/, "")}/api/gateway`,
-    runtimeToken,
+    // LOCAL: the pod shares this machine, so anchor the run at the user's shell
+    // directory and lend it OUR gateway credential (it has none of its own).
+    // CLOUD: `workdir` is refused (400) and the pod carries its own gateway
+    // credential — so send neither and let the provisioned runtime be itself.
+    ...(local && opts.cwd ? { workdir: opts.cwd } : {}),
+    ...(local
+      ? { gatewayUrl: `${opts.server.replace(/\/+$/, "")}/api/gateway`, runtimeToken: await opts.client.token() }
+      : {}),
+    ...(host.sessionId ? { sessionId: host.sessionId } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
   });
 

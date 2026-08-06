@@ -11,21 +11,18 @@
  * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
  * scroll; tool receipts are collapsed by default and ctrl+o toggles them all
  * open (retroactively, because lines regenerate from items).
- * A leading `/` runs a slash command; plain text runs ONE TURN — either the
- * embedded Agent SDK loop (agent.ts, the default) or, with
- * `GLYPHH_LOCAL_ROTOR=1`, the machine's local HARNESS POD (harness.ts, the
- * convergence path; see localHarnessEnabled for what still blocks the flip).
- * Both paint through ONE transcript sink and ONE approval strip: tool calls
- * land as collapsible receipts, the answer streams into the `●` line, and a
- * parked approval/ask takes the keyboard until it's answered.
+ * A leading `/` runs a slash command; plain text runs ONE HARNESS TURN
+ * (harness.ts) on this session's pod — the machine's local one, or the Glyphh
+ * cloud runtime when there is no local harness. Tool calls land as collapsible
+ * receipts, the answer streams into the `●` line, and a parked approval/ask
+ * takes the keyboard until it's answered.
  * All capability comes from the SDK — nothing here talks to an API directly.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import type { Client } from "@glyphh/sdk";
-import { runAgentTurn } from "../agent.js";
-import { runHarnessTurn, localHarnessEnabled, type ApprovalRequest, type AskRequest } from "../harness.js";
+import { runHarnessTurn, type ApprovalRequest, type AskRequest } from "../harness.js";
 // Live model switches (/use) audit + layer in via the SDK override store.
 import { sessionOverrides } from "@glyphh/sdk/runtime";
 import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
@@ -66,44 +63,16 @@ const VERBS: Array<{ ing: string; past: string }> = [
 /** Most recent turns sent to the model — bounds the wire, not the transcript. */
 const HISTORY_CAP = 40;
 
-/** Read-only tools — no side effects, so they never prompt. Covers the local
- *  built-ins that only observe plus the Glyphh MCP read tools. EXPORTED so the
- *  permission classification (the safety-critical bit) is unit-tested. Used by
- *  the EMBEDDED loop's gate; on the harness path the pod classifies instead. */
-export const READ_BUILTINS = new Set([
-  "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "NotebookRead", "TodoWrite",
-  "desktop_panels_list", "desktop_native_apps_list",
-]);
-export const READ_PREFIX = /^(list|get|read|find|search|status|browse)/; // Glyphh MCP reads
-export const isReadOnlyTool = (tool: string): boolean =>
-  READ_BUILTINS.has(tool) || READ_PREFIX.test(tool);
-
-/** A tool receipt label. The harness pod classifies each call and sends a human
- *  title ("Run npm test"); the embedded loop derives one from the tool's own
- *  arguments ({@link argTitle}). The bare name is the fallback for both. */
+/** A tool receipt label: the pod classifies each call and sends a human title
+ *  ("Run npm test"); the bare tool name is the fallback. */
 export function toolLabel(name: string, title?: string): string {
   const t = (title ?? "").trim();
   if (!t) return name;
   return t.length > 76 ? `${t.slice(0, 75)}…` : t;
 }
 
-/** The embedded loop's receipt title: the key argument inlined, so the
- *  transcript reads like actions ("Write index.html", "Bash mkdir -p …"). */
-export function argTitle(name: string, input: unknown): string {
-  const arg = keyArg(input);
-  return arg ? `${name}  ${arg.length > 72 ? `${arg.slice(0, 71)}…` : arg}` : name;
-}
-
-/** The one argument worth showing: the command, the path, the url, the query. */
-function keyArg(input: unknown): string {
-  const o = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const s = (v: unknown): string => (typeof v === "string" ? v : "");
-  return s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || s(o.query) || "";
-}
-
-/** What the strip is blocked on — a run PARKED until the user answers. Both
- *  engines produce these: the harness pod as `approval`/`ask` frames, the
- *  embedded loop through its own gate ({@link isReadOnlyTool}). */
+/** What the strip is blocked on — the pod PARKED the run until the user
+ *  answers (an `approval` or `ask` frame). */
 type Pending =
   | { kind: "approval"; req: ApprovalRequest; answer: (allow: boolean) => void }
   | { kind: "ask"; req: AskRequest; index: number; answers: string[]; answer: (answers: string[]) => void };
@@ -181,8 +150,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   /** The run is parked on an approval or a question — the strip owns the
    *  screen until it's answered (approval: y/a/n; ask: type and Enter). */
   const [pending, setPending] = useState<Pending | null>(null);
-  /** What the user answered "a"lways for — the pod's action kind on the harness
-   *  path, the tool name on the embedded one — auto-allowed for this session. */
+  /** Action kinds ("edit", "command", …) the user answered "a"lways for —
+   *  auto-allowed for the rest of this session. */
   const allowedKinds = useRef<Set<string>>(new Set());
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -387,31 +356,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /**
-   * THE EMBEDDED LOOP'S PERMISSION GATE, per the mode chip. Read-only tools
-   * always pass (no prompt) except in plan mode; mutating/exec tools prompt in
-   * ask mode, auto-run in auto, and are refused in read-only/plan. It parks on
-   * the SAME strip the harness path's `approval` frames use — one prompt UI,
-   * two engines. (On the harness path the pod owns this decision.)
-   */
-  const gateTool = useCallback((tool: string, input: unknown): Promise<boolean> => {
-    const m = modeRef.current;
-    const ro = isReadOnlyTool(tool);
-    if (m === "plan" || m === "read-only") return Promise.resolve(ro); // explore, never mutate
-    if (ro) return Promise.resolve(true);                              // reads never prompt
-    if (m === "auto") return Promise.resolve(true);                    // auto: run unprompted
-    if (allowedKinds.current.has(tool)) return Promise.resolve(true);
-    return new Promise<boolean>((resolve) => {
-      setPending({
-        kind: "approval",
-        // The embedded loop has no action taxonomy — the TOOL is the kind, so
-        // "always" means "always this tool this session".
-        req: { id: tool, kind: tool, title: toolLabel(tool, argTitle(tool, input)), detail: keyArg(input) },
-        answer: (allow) => resolve(allow),
-      });
-    });
-  }, []);
-
   const runTurn = useCallback(
     async (prompt: string) => {
       const startedAt = Date.now();
@@ -478,7 +422,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           // A tool's start receipt, keyed by name, so its result folds into the
           // SAME receipt (parallel calls queue per name).
           const toolItems = new Map<string, string[]>();
-          /** ONE transcript sink — both engines paint through it. */
+          /** The transcript sink the frame stream paints through. */
           const sink = {
             delta: (t: string) => {
               text += t;
@@ -528,81 +472,40 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
             },
           };
 
-          let result: { text: string; stopped: boolean; error?: string };
-          if (localHarnessEnabled()) {
-            // THE HARNESS PATH: the turn runs on the machine's local pod (one
-            // harness everywhere) and the TUI just renders its frames.
-            result = await runHarnessTurn(
-              {
-                client,
-                server,
-                model: modelRef.current.id,
-                threadId: threadSync.current?.id ?? "",
-                history: history.current.slice(-HISTORY_CAP),
-                prompt,
-                cwd: process.cwd(),
-                permission: modeRef.current,
-                signal: abort.signal,
+          const result = await runHarnessTurn(
+            {
+              client,
+              server,
+              model: modelRef.current.id,
+              threadId: threadSync.current?.id ?? "",
+              history: history.current.slice(-HISTORY_CAP),
+              prompt,
+              cwd: process.cwd(),
+              permission: modeRef.current,
+              signal: abort.signal,
+            },
+            {
+              onDelta: sink.delta,
+              onToolStart: sink.toolStart,
+              onToolDone: sink.toolDone,
+              onProgress: sink.progress,
+              onCredits: (credits) => {
+                turn.credits = credits;
+                setLast({ ...turn });
               },
-              {
-                onDelta: sink.delta,
-                onToolStart: sink.toolStart,
-                onToolDone: sink.toolDone,
-                onProgress: sink.progress,
-                onCredits: (credits) => {
-                  turn.credits = credits;
-                  setLast({ ...turn });
-                },
-                // The pod PARKED the run: the strip takes the keyboard until the
-                // user answers, and `answer` resumes the pod-side loop.
-                onApproval: (req, answer) => {
-                  if (allowedKinds.current.has(req.kind)) {
-                    answer(true);
-                    return;
-                  }
-                  setPending({ kind: "approval", req, answer });
-                },
-                onAsk: (req, answer) => setPending({ kind: "ask", req, index: 0, answers: [], answer }),
-                onNote: (note) => push({ kind: "note", text: note }),
+              // The pod PARKED the run: the strip takes the keyboard until the
+              // user answers, and `answer` resumes the pod-side loop.
+              onApproval: (req, answer) => {
+                if (allowedKinds.current.has(req.kind)) {
+                  answer(true);
+                  return;
+                }
+                setPending({ kind: "approval", req, answer });
               },
-            );
-          } else {
-            // THE EMBEDDED LOOP (default): the Agent SDK runs in this process and
-            // the gate below is the one that actually enforces the mode chip.
-            let pendingTool: string | null = null;
-            const finalText = await runAgentTurn(
-              {
-                client,
-                server,
-                model: modelRef.current.id,
-                history: history.current.slice(-HISTORY_CAP),
-                prompt,
-                cwd: process.cwd(),
-                gate: (tool, input) => gateTool(tool, input),
-                signal: abort.signal,
-              },
-              {
-                onDelta: sink.delta,
-                onTool: (name, input) => {
-                  pendingTool = name;
-                  sink.toolStart(name, argTitle(name, input));
-                },
-                onToolResult: (content, isError) => {
-                  const name = pendingTool ?? "tool";
-                  pendingTool = null;
-                  sink.toolDone(name, { failed: isError, denied: false, preview: content });
-                },
-                onProgress: sink.progress,
-                onUsage: (up, down, costUsd) => {
-                  turn.tokensUp = up;     // real input (incl. cache) tokens
-                  turn.tokensDown = down; // real output tokens
-                  turn.costUsd = costUsd;
-                  setLast({ ...turn });
-                },
-              },
-            );
-            result = { text: finalText, stopped: abort.signal.aborted };
-          }
+              onAsk: (req, answer) => setPending({ kind: "ask", req, index: 0, answers: [], answer }),
+              onNote: (note) => push({ kind: "note", text: note }),
+            },
+          );
           text = result.text || text;
           turn.text = text;
           const stopped = result.stopped || abort.signal.aborted;
