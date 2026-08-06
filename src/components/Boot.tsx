@@ -19,7 +19,7 @@ import { ThemePicker } from "./ThemePicker.js";
 import { readPrefs, writePrefs } from "../prefs.js";
 import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
-import { resetAgentAuth } from "../agent.js";
+import { resetMcpGrant } from "../mcp-grant.js";
 import { startMachineHost, stopMachineHost } from "../machine-host.js";
 
 export interface BootProps {
@@ -68,7 +68,7 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   useEffect(() => {
     if (!authLost) return;
     authLost.handler = () => {
-      resetAgentAuth(); // the /mcp grant + interceptor bearer died with the session
+      resetMcpGrant(); // the /mcp grant died with the session
       stopMachineHost();
       setAccount(null);
       setPhase("login");
@@ -79,7 +79,7 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   }, [authLost]);
 
   const onAuthed = useCallback(() => {
-    resetAgentAuth(); // fresh session → fresh grant on the next turn
+    resetMcpGrant(); // fresh session → fresh grant on the next turn
     void loadAccount(client).then((a) => {
       setAccount(a);
       if (a) startMachineHost(client, server, version);
@@ -91,7 +91,7 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   // /login (user-initiated) → the same login gate a dead session drops to. On
   // success onAuthed bumps the epoch, so the App remounts on the fresh session.
   const onRelogin = useCallback(() => {
-    resetAgentAuth();
+    resetMcpGrant();
     stopMachineHost();
     setAccount(null);
     setPhase("login");

@@ -19,10 +19,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Client } from "@glyphh/sdk";
 import { startInterceptor, type Interceptor } from "@glyphh/sdk/runtime";
+import { mintMcpGrant } from "./mcp-grant.js";
 
 /** App-owned config home for the agent subprocess (never ~/.claude) — and
  *  PER CLI INSTANCE: every launch is its own agent session, fully isolated
@@ -53,60 +53,6 @@ let interceptor: Interceptor | null = null;
 async function ensureInterceptor(client: Client): Promise<Interceptor> {
   if (!interceptor) interceptor = await startInterceptor({ client });
   return interceptor;
-}
-
-// ── The /mcp grant: an OAuth token (gy_mt_) minted headlessly with the user's
-//    session — register → consent → code → exchange, PKCE throughout. ─────────
-let grantCache: { server: string; token: string } | null = null;
-
-async function mintMcpGrant(client: Client, server: string): Promise<string> {
-  if (grantCache?.server === server) return grantCache.token;
-  const base = server.replace(/\/+$/, "");
-  const redirect = "http://127.0.0.1:1/callback"; // never followed — the code comes back in JSON
-  const verifier = randomBytes(48).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-
-  const reg = await fetch(`${base}/oauth/register`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "Glyphh CLI", redirect_uris: [redirect] }),
-  }).then((r) => r.json() as Promise<{ client_id: string }>);
-
-  const consent = await fetch(`${base}/oauth/consent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${await client.token()}` },
-    body: JSON.stringify({
-      client_id: reg.client_id,
-      redirect_uri: redirect,
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      scope: "mcp",
-    }),
-  }).then((r) => r.json() as Promise<{ data?: { redirectTo?: string } }>);
-  const redirectTo = consent.data?.redirectTo;
-  const code = redirectTo ? new URL(redirectTo).searchParams.get("code") : null;
-  if (!code) throw new Error("mcp grant: consent returned no code");
-
-  const tok = await fetch(`${base}/oauth/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirect,
-      client_id: reg.client_id,
-      code_verifier: verifier,
-    }),
-  }).then((r) => r.json() as Promise<{ access_token?: string }>);
-  if (!tok.access_token) throw new Error("mcp grant: token exchange failed");
-
-  grantCache = { server, token: tok.access_token };
-  return tok.access_token;
-}
-
-/** Drop cached auth material (call when the session dies / rotates). */
-export function resetAgentAuth(): void {
-  grantCache = null;
 }
 
 // ── The turn ─────────────────────────────────────────────────────────────────

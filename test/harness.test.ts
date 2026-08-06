@@ -147,6 +147,7 @@ const turn = (pod: FakePod, h: HarnessTurnHandlers, over: Record<string, unknown
       permission: "ask",
       ensurePod: async () => ({ url: "http://127.0.0.1:51234" }),
       openHarness: () => pod.client,
+      mintGrant: async () => "gy_mt_test",
       ...over,
     } as Parameters<typeof runHarnessTurn>[0],
     h,
@@ -178,9 +179,49 @@ describe("harness turn", () => {
       gatewayUrl: "http://127.0.0.1:3001/api/gateway",
       runtimeToken: "gy_at_test",
     });
-    // The system prompt names the user's shell dir — the pod's own cwd is a
-    // scratch workspace, so without this "this project" means nothing.
+    // The run is ANCHORED at the user's shell dir (a local pod honors
+    // `workdir`), and the system prompt says so — without both, "this project"
+    // would mean the pod's empty sandbox workspace.
+    expect(pod.body!.workdir).toBe("/tmp/work");
     expect(String(pod.body!.system)).toContain("/tmp/work");
+  });
+
+  it("LENDS the server's governed tool surface to the pod", async () => {
+    const pod = fakePod([frame({ type: "done", stopped: false })]);
+    const { h } = handlers();
+    await turn(pod, h);
+    // NOT under the name "glyphh" — the pod reserves that for its own ask_user
+    // server and 400s the whole run if a lent server claims it.
+    expect(pod.body!.mcpServers).toEqual([
+      { name: "platform", url: "http://127.0.0.1:3001/mcp", headers: { authorization: "Bearer gy_mt_test" } },
+    ]);
+  });
+
+  it("strips the MCP server prefix so receipts name the tool, not the wire", async () => {
+    const pod = fakePod([
+      frame({ type: "tool", phase: "start", name: "mcp__platform__list_loops", thought: "list_loops" }),
+      frame({ type: "tool", phase: "done", name: "mcp__platform__list_loops", failed: false, preview: "[]" }),
+      frame({ type: "done", stopped: false }),
+    ]);
+    const { h, log } = handlers();
+    await turn(pod, h);
+    expect(log).toEqual(["tool.start:list_loops:list_loops", "tool.done:list_loops:ok:[]"]);
+  });
+
+  it("runs WITHOUT the lent surface (and says so once) when the grant fails", async () => {
+    const pod = fakePod([frame({ type: "delta", delta: "still working" }), frame({ type: "done", stopped: false })]);
+    const { h, log } = handlers();
+    const res = await turn(pod, h, { mintGrant: () => Promise.reject(new Error("consent returned no code")) });
+    expect(pod.body).not.toHaveProperty("mcpServers");
+    expect(log.some((l) => l.startsWith("note:") && /aren't available this turn/.test(l))).toBe(true);
+    expect(res.text).toBe("still working"); // the turn is NOT failed over a tool surface
+  });
+
+  it("omits workdir when the caller has no cwd — the pod keeps its sandbox", async () => {
+    const pod = fakePod([frame({ type: "done", stopped: false })]);
+    const { h } = handlers();
+    await turn(pod, h, { cwd: undefined });
+    expect(pod.body).not.toHaveProperty("workdir");
   });
 
   it("maps tool frames to start/done receipts and progress/credits to the strip", async () => {
@@ -313,8 +354,9 @@ describe("permission mapping", () => {
   it("the system prompt keeps the agent honest about where the user is", () => {
     const p = cliSystemPrompt("/Users/me/project");
     expect(p).toContain("/Users/me/project");
-    expect(p).toMatch(/absolute paths/i);
+    expect(p).toMatch(/relative path/i); // the run is anchored there
+    expect(p).toMatch(/real folder/i);   // …and it's the user's own, not a sandbox
     expect(p).toMatch(/ask_user/);
-    expect(cliSystemPrompt()).toMatch(/absolute paths/i);
+    expect(cliSystemPrompt()).toMatch(/working directory/i);
   });
 });
