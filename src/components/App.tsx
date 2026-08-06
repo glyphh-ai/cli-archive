@@ -11,9 +11,13 @@
  * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
  * scroll; tool receipts are collapsed by default and ctrl+o toggles them all
  * open (retroactively, because lines regenerate from items).
- * A leading `/` runs a slash command; plain text runs ONE AGENT TURN (the
- * desktop's engine): tool calls land as collapsible receipts, the answer
- * streams into the `●` line.
+ * A leading `/` runs a slash command; plain text runs ONE TURN — either the
+ * embedded Agent SDK loop (agent.ts, the default) or, with
+ * `GLYPHH_LOCAL_ROTOR=1`, the machine's local HARNESS POD (harness.ts, the
+ * convergence path; see localHarnessEnabled for what still blocks the flip).
+ * Both paint through ONE transcript sink and ONE approval strip: tool calls
+ * land as collapsible receipts, the answer streams into the `●` line, and a
+ * parked approval/ask takes the keyboard until it's answered.
  * All capability comes from the SDK — nothing here talks to an API directly.
  */
 
@@ -21,6 +25,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import type { Client } from "@glyphh/sdk";
 import { runAgentTurn } from "../agent.js";
+import { runHarnessTurn, localHarnessEnabled, type ApprovalRequest, type AskRequest } from "../harness.js";
 // Live model switches (/use) audit + layer in via the SDK override store.
 import { sessionOverrides } from "@glyphh/sdk/runtime";
 import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
@@ -43,7 +48,7 @@ import { headerLines,
   type Line,
 } from "../lines.js";
 import { ThreadSync, mintThreadId, conversationOf, THREAD_ID_RE } from "../threads.js";
-import type { ChatTurn, Item, PermissionMode } from "../types.js";
+import type { ChatTurn, Item, PermissionMode, TurnStep } from "../types.js";
 
 const MODES: PermissionMode[] = ["ask", "auto", "plan", "read-only"];
 
@@ -63,7 +68,8 @@ const HISTORY_CAP = 40;
 
 /** Read-only tools — no side effects, so they never prompt. Covers the local
  *  built-ins that only observe plus the Glyphh MCP read tools. EXPORTED so the
- *  permission classification (the safety-critical bit) is unit-tested. */
+ *  permission classification (the safety-critical bit) is unit-tested. Used by
+ *  the EMBEDDED loop's gate; on the harness path the pod classifies instead. */
 export const READ_BUILTINS = new Set([
   "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "NotebookRead", "TodoWrite",
   "desktop_panels_list", "desktop_native_apps_list",
@@ -72,17 +78,35 @@ export const READ_PREFIX = /^(list|get|read|find|search|status|browse)/; // Glyp
 export const isReadOnlyTool = (tool: string): boolean =>
   READ_BUILTINS.has(tool) || READ_PREFIX.test(tool);
 
-/** A tool receipt label with its key argument inlined, so the transcript reads
- *  like actions ("Write index.html", "Bash mkdir -p …") instead of bare names. */
-function toolLabel(name: string, input: unknown): string {
+/** A tool receipt label. The harness pod classifies each call and sends a human
+ *  title ("Run npm test"); the embedded loop derives one from the tool's own
+ *  arguments ({@link argTitle}). The bare name is the fallback for both. */
+export function toolLabel(name: string, title?: string): string {
+  const t = (title ?? "").trim();
+  if (!t) return name;
+  return t.length > 76 ? `${t.slice(0, 75)}…` : t;
+}
+
+/** The embedded loop's receipt title: the key argument inlined, so the
+ *  transcript reads like actions ("Write index.html", "Bash mkdir -p …"). */
+export function argTitle(name: string, input: unknown): string {
+  const arg = keyArg(input);
+  return arg ? `${name}  ${arg.length > 72 ? `${arg.slice(0, 71)}…` : arg}` : name;
+}
+
+/** The one argument worth showing: the command, the path, the url, the query. */
+function keyArg(input: unknown): string {
   const o = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const s = (v: unknown): string => (typeof v === "string" ? v : "");
-  const arg =
-    s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || s(o.query) || "";
-  if (!arg) return name;
-  const short = arg.length > 72 ? `${arg.slice(0, 71)}…` : arg;
-  return `${name}  ${short}`;
+  return s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || s(o.query) || "";
 }
+
+/** What the strip is blocked on — a run PARKED until the user answers. Both
+ *  engines produce these: the harness pod as `approval`/`ask` frames, the
+ *  embedded loop through its own gate ({@link isReadOnlyTool}). */
+type Pending =
+  | { kind: "approval"; req: ApprovalRequest; answer: (allow: boolean) => void }
+  | { kind: "ask"; req: AskRequest; index: number; answers: string[]; answer: (answers: string[]) => void };
 
 /** A governed connection that isn't authorized comes back as a raw tool error
  *  ("No access/refresh token", "not authorized", …). Detect it so the TUI can
@@ -154,11 +178,12 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const modelRef = useRef<{ loop: string | null; id: string | null }>({ loop: null, id: null });
   // The conversation the model sees — user/assistant turns, capped for the wire.
   const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
-  /** A pending tool approval (ask mode): the strip prompts, y/n/a answers. */
-  const [gatePending, setGatePending] = useState<{ tool: string; preview: string } | null>(null);
-  const gateResolve = useRef<((ok: boolean) => void) | null>(null);
-  /** Tools the user answered "a"lways for — auto-allowed for this session. */
-  const sessionAllowed = useRef<Set<string>>(new Set());
+  /** The run is parked on an approval or a question — the strip owns the
+   *  screen until it's answered (approval: y/a/n; ask: type and Enter). */
+  const [pending, setPending] = useState<Pending | null>(null);
+  /** What the user answered "a"lways for — the pod's action kind on the harness
+   *  path, the tool name on the embedded one — auto-allowed for this session. */
+  const allowedKinds = useRef<Set<string>>(new Set());
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // A stable per-process id so a mid-session model switch's overrides + audit key together.
@@ -362,34 +387,28 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Short human preview of what a mutating tool will do, for the approval strip:
-   *  the bash command, the file path, the fetched url, etc. */
-  const gatePreview = (input: unknown): string => {
-    const o = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-    const s = (v: unknown): string => (typeof v === "string" ? v : "");
-    const pick = s(o.command) || s(o.file_path) || s(o.path) || s(o.url) || s(o.pattern) || "";
-    return pick ? (pick.length > 96 ? `${pick.slice(0, 95)}…` : pick) : "";
-  };
-
-  /** The permission gate, per the mode chip. Read-only tools always pass (no
-   *  prompt) except in plan mode; mutating/exec tools (Bash, Write, Edit,
-   *  create_*, deploy_*, connection + desktop control) prompt in ask mode,
-   *  auto-run in auto, and are refused in read-only/plan. */
+  /**
+   * THE EMBEDDED LOOP'S PERMISSION GATE, per the mode chip. Read-only tools
+   * always pass (no prompt) except in plan mode; mutating/exec tools prompt in
+   * ask mode, auto-run in auto, and are refused in read-only/plan. It parks on
+   * the SAME strip the harness path's `approval` frames use — one prompt UI,
+   * two engines. (On the harness path the pod owns this decision.)
+   */
   const gateTool = useCallback((tool: string, input: unknown): Promise<boolean> => {
     const m = modeRef.current;
     const ro = isReadOnlyTool(tool);
-    if (m === "plan") return Promise.resolve(ro);        // explore to plan, never mutate
-    if (m === "read-only") return Promise.resolve(ro);
-    if (ro) return Promise.resolve(true);                // reads never prompt
-    if (m === "auto") return Promise.resolve(true);      // auto: run mutations unprompted
-    if (sessionAllowed.current.has(tool)) return Promise.resolve(true);
-    return new Promise<boolean>((resolve) => {           // ask: prompt for this mutation
-      gateResolve.current = (ok) => {
-        gateResolve.current = null;
-        setGatePending(null);
-        resolve(ok);
-      };
-      setGatePending({ tool, preview: gatePreview(input) });
+    if (m === "plan" || m === "read-only") return Promise.resolve(ro); // explore, never mutate
+    if (ro) return Promise.resolve(true);                              // reads never prompt
+    if (m === "auto") return Promise.resolve(true);                    // auto: run unprompted
+    if (allowedKinds.current.has(tool)) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      setPending({
+        kind: "approval",
+        // The embedded loop has no action taxonomy — the TOOL is the kind, so
+        // "always" means "always this tool this session".
+        req: { id: tool, kind: tool, title: toolLabel(tool, argTitle(tool, input)), detail: keyArg(input) },
+        answer: (allow) => resolve(allow),
+      });
     });
   }, []);
 
@@ -456,80 +475,143 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           let segId: string | null = null;
           let segText = "";
           let text = "";
-          let pendingTool: string | null = null;
-          const finalText = await runAgentTurn(
-            {
-              client,
-              server,
-              model: modelRef.current.id,
-              history: history.current.slice(-HISTORY_CAP),
-              prompt,
-              cwd: process.cwd(),
-              gate: (tool, input) => gateTool(tool, input),
-              signal: abort.signal,
+          // A tool's start receipt, keyed by name, so its result folds into the
+          // SAME receipt (parallel calls queue per name).
+          const toolItems = new Map<string, string[]>();
+          /** ONE transcript sink — both engines paint through it. */
+          const sink = {
+            delta: (t: string) => {
+              text += t;
+              if (!segId) {
+                segText = t.replace(/^\s+/, "");
+                if (!segText) return; // a bare separator between turns — wait for content
+                segId = push({ kind: "answer", text: segText });
+                return;
+              }
+              segText += t;
+              const id = segId;
+              patchItem(id, (it) => ({ ...it, text: segText }) as Item);
             },
-            {
-              onDelta: (t) => {
-                text += t;
-                if (!segId) {
-                  segText = t.replace(/^\s+/, "");
-                  if (!segText) return; // a bare separator between turns — wait for content
-                  segId = push({ kind: "answer", text: segText });
-                  return;
-                }
-                segText += t;
-                const id = segId;
-                patchItem(id, (it) => ({ ...it, text: segText }) as Item);
-              },
-              // A tool call lands as a ⏺ receipt; its result folds in beneath.
-              onTool: (name, input) => {
-                segId = null; // next text lands BELOW this receipt
-                pendingTool = name;
-                push({ kind: "section", step: { label: toolLabel(name, input), ok: true, details: [] } });
-              },
-              onToolResult: (content, isError) => {
-                segId = null;
-                const label = pendingTool ?? "tool";
-                pendingTool = null;
-                // An unauthorized connection surfaces as an error — turn it into
-                // an actionable note rather than a raw failure receipt.
-                const hint = isError ? connectionAuthHint(label, content) : null;
-                if (hint) {
-                  push({ kind: "note", text: hint });
-                  return;
-                }
-                if (content || isError) {
-                  push({
-                    kind: "section",
-                    step: {
-                      label: `${label} → ${isError ? "error" : "result"}`,
-                      ok: !isError,
-                      // Collapsed to a few lines by default (ctrl+o expands), so
-                      // keep the full body available rather than clipping at 12.
-                      details: content ? content.split("\n").slice(0, 200) : [],
-                      ...(isError ? { error: "tool error" } : {}),
-                    },
-                  });
-                }
-              },
-              onProgress: (up, down) => {
-                turn.tokensUp = up;
-                turn.tokensDown = down;
-                setLast({ ...turn });
-              },
-              onUsage: (up, down, costUsd) => {
-                turn.tokensUp = up;       // real input (incl. cache) tokens
-                turn.tokensDown = down;   // real output tokens
-                turn.costUsd = costUsd;
-                setLast({ ...turn });
-              },
+            // A tool call lands as a ⏺ receipt; its result folds into it.
+            toolStart: (name: string, title?: string) => {
+              segId = null; // next text lands BELOW this receipt
+              const id = push({ kind: "section", step: { label: toolLabel(name, title), ok: true, details: [] } });
+              const queue = toolItems.get(name) ?? [];
+              queue.push(id);
+              toolItems.set(name, queue);
             },
-          );
-          text = finalText || text;
+            toolDone: (name: string, r: { failed: boolean; denied: boolean; preview: string }) => {
+              segId = null;
+              // An unauthorized connection surfaces as a tool failure — turn it
+              // into an actionable note rather than a raw error receipt.
+              const hint = r.failed ? connectionAuthHint(name, r.preview) : null;
+              if (hint) push({ kind: "note", text: hint });
+              const details = r.preview ? r.preview.split("\n").slice(0, 200) : [];
+              const error = r.denied ? "denied" : r.failed ? "tool error" : undefined;
+              const id = toolItems.get(name)?.shift();
+              if (id) {
+                patchItem(id, (it) => {
+                  const step = (it as { step: TurnStep }).step;
+                  return { ...it, step: { ...step, ok: !r.failed, details, ...(error ? { error } : {}) } } as Item;
+                });
+                return;
+              }
+              push({
+                kind: "section",
+                step: { label: `${name} → ${r.failed ? "error" : "result"}`, ok: !r.failed, details, ...(error ? { error } : {}) },
+              });
+            },
+            progress: (up: number, down: number) => {
+              turn.tokensUp = up;
+              turn.tokensDown = down;
+              setLast({ ...turn });
+            },
+          };
+
+          let result: { text: string; stopped: boolean; error?: string };
+          if (localHarnessEnabled()) {
+            // THE HARNESS PATH: the turn runs on the machine's local pod (one
+            // harness everywhere) and the TUI just renders its frames.
+            result = await runHarnessTurn(
+              {
+                client,
+                server,
+                model: modelRef.current.id,
+                threadId: threadSync.current?.id ?? "",
+                history: history.current.slice(-HISTORY_CAP),
+                prompt,
+                cwd: process.cwd(),
+                permission: modeRef.current,
+                signal: abort.signal,
+              },
+              {
+                onDelta: sink.delta,
+                onToolStart: sink.toolStart,
+                onToolDone: sink.toolDone,
+                onProgress: sink.progress,
+                onCredits: (credits) => {
+                  turn.credits = credits;
+                  setLast({ ...turn });
+                },
+                // The pod PARKED the run: the strip takes the keyboard until the
+                // user answers, and `answer` resumes the pod-side loop.
+                onApproval: (req, answer) => {
+                  if (allowedKinds.current.has(req.kind)) {
+                    answer(true);
+                    return;
+                  }
+                  setPending({ kind: "approval", req, answer });
+                },
+                onAsk: (req, answer) => setPending({ kind: "ask", req, index: 0, answers: [], answer }),
+                onNote: (note) => push({ kind: "note", text: note }),
+              },
+            );
+          } else {
+            // THE EMBEDDED LOOP (default): the Agent SDK runs in this process and
+            // the gate below is the one that actually enforces the mode chip.
+            let pendingTool: string | null = null;
+            const finalText = await runAgentTurn(
+              {
+                client,
+                server,
+                model: modelRef.current.id,
+                history: history.current.slice(-HISTORY_CAP),
+                prompt,
+                cwd: process.cwd(),
+                gate: (tool, input) => gateTool(tool, input),
+                signal: abort.signal,
+              },
+              {
+                onDelta: sink.delta,
+                onTool: (name, input) => {
+                  pendingTool = name;
+                  sink.toolStart(name, argTitle(name, input));
+                },
+                onToolResult: (content, isError) => {
+                  const name = pendingTool ?? "tool";
+                  pendingTool = null;
+                  sink.toolDone(name, { failed: isError, denied: false, preview: content });
+                },
+                onProgress: sink.progress,
+                onUsage: (up, down, costUsd) => {
+                  turn.tokensUp = up;     // real input (incl. cache) tokens
+                  turn.tokensDown = down; // real output tokens
+                  turn.costUsd = costUsd;
+                  setLast({ ...turn });
+                },
+              },
+            );
+            result = { text: finalText, stopped: abort.signal.aborted };
+          }
+          text = result.text || text;
           turn.text = text;
-          const stopped = abort.signal.aborted;
+          const stopped = result.stopped || abort.signal.aborted;
+          if (result.error) {
+            turn.status = "error";
+            push({ kind: "note", text: result.error });
+          }
           if (stopped) push({ kind: "note", text: "⏹ Stopped." });
-          else if (!text.trim()) push({ kind: "note", text: "(no answer text — the run ended after tool calls)" });
+          else if (!result.error && !text.trim()) push({ kind: "note", text: "(no answer text — the run ended after tool calls)" });
           // A stopped turn's partial answer still belongs in the history so a
           // follow-up ("continue") has the context.
           history.current.push({ role: "user", content: prompt });
@@ -557,13 +639,16 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         if (turn.credits !== null) parts.push(`· ◈ ${turn.credits} credit${turn.credits === 1 ? "" : "s"}`);
         push({ kind: "meta", text: `* ${parts.join(" ")}` });
       } catch (err) {
+        // The pod wouldn't start / went away mid-turn: ONE honest line in the
+        // transcript, never a crash and never a fabricated answer.
         turn.status = "error";
-        turn.text = `local runtime error: ${(err as Error).message}`;
+        turn.text = `Harness unavailable — ${(err as Error).message}`;
         turn.durationMs = Date.now() - startedAt;
-        push({ kind: "answer", text: turn.text });
+        push({ kind: "note", text: turn.text });
         setLast({ ...turn });
       } finally {
         turnAbort.current = null;
+        setPending(null); // a parked ask/approval dies with its run
         setBusy(false);
       }
     },
@@ -671,18 +756,46 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     [lines.length, paneH],
   );
 
+  /** Answer the ask the strip is showing (Enter). A bare Enter skips the
+   *  question — the pod reads an empty answer as "proceed on best judgment". */
+  const answerAsk = useCallback(() => {
+    setPending((p) => {
+      if (p?.kind !== "ask") return p;
+      const raw = inputRef.current.trim();
+      editInput(() => "");
+      const q = p.req.questions[p.index]!;
+      const options = q.options ?? [];
+      const pick = /^[1-9]$/.test(raw) ? options[Number(raw) - 1] : undefined;
+      const value = pick ?? raw;
+      push({ kind: "meta", text: `* ${q.question} → ${value || "(skipped)"}` });
+      const answers = [...p.answers, value];
+      if (answers.length >= p.req.questions.length) {
+        p.answer(answers);
+        return null;
+      }
+      return { ...p, index: p.index + 1, answers };
+    });
+  }, [editInput, push]);
+
   useInput((ch, key) => {
-    // A pending tool approval owns the keyboard: y allows once, a allows the
-    // tool for the session, n/esc refuses. Everything else is swallowed.
-    if (gatePending) {
-      if (ch === "y" || key.return) gateResolve.current?.(true);
+    // A parked approval owns the keyboard: y allows once, a allows that ACTION
+    // KIND for the session, n/esc refuses. Everything else is swallowed.
+    if (pending?.kind === "approval") {
+      if (ch === "y" || key.return) pending.answer(true);
       else if (ch === "a") {
-        sessionAllowed.current.add(gatePending.tool);
-        gateResolve.current?.(true);
-      } else if (ch === "n" || key.escape) gateResolve.current?.(false);
+        allowedKinds.current.add(pending.req.kind);
+        pending.answer(true);
+      } else if (ch === "n" || key.escape) pending.answer(false);
+      else return;
+      setPending(null);
       return;
     }
-    // Esc stops the RUNNING turn (kills the agent subprocess, keeps the partial
+    // A parked ask types into the composer like any prompt; Enter submits it.
+    if (pending?.kind === "ask" && key.return) {
+      answerAsk();
+      return;
+    }
+    // Esc stops the RUNNING turn (the pod aborts its agent, keeps the partial
     // answer). Ctrl+C still quits the whole app — Esc is the "stop this, stay here".
     if (busy && key.escape) {
       stopTurn();
@@ -763,13 +876,28 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       ) : null}
       <Box flexDirection="column" flexShrink={0} ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
-        {gatePending ? (
+        {pending?.kind === "approval" ? (
           <Box flexDirection="column">
             <Text color={theme.accent} wrap="truncate-end">
-              {`  ⏸ ${gatePending.tool}${gatePending.preview ? `  ${gatePending.preview}` : ""}`}
+              {`  ⏸ ${pending.req.title}${pending.req.detail ? `  ${pending.req.detail.split("\n")[0]}` : ""}`}
             </Text>
             <Text color={theme.faint} wrap="truncate-end">
-              {"     allow? (y)es once · (a)lways this session · (n)o"}
+              {`     allow? (y)es once · (a)lways ${pending.req.kind} this session · (n)o`}
+            </Text>
+          </Box>
+        ) : null}
+        {pending?.kind === "ask" ? (
+          <Box flexDirection="column">
+            <Text color={theme.accent} wrap="truncate-end">
+              {`  ⏸ ${pending.req.questions[pending.index]?.question ?? ""}${
+                pending.req.questions.length > 1 ? `  (${pending.index + 1}/${pending.req.questions.length})` : ""
+              }`}
+            </Text>
+            {(pending.req.questions[pending.index]?.options ?? []).map((o, i) => (
+              <Text key={o} color={theme.faint} wrap="truncate-end">{`     ${i + 1}) ${o}`}</Text>
+            ))}
+            <Text color={theme.faint} wrap="truncate-end">
+              {"     type an answer (or its number) and press enter · empty skips"}
             </Text>
           </Box>
         ) : null}

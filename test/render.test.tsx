@@ -17,7 +17,7 @@ import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
-import { isReadOnlyTool, connectionAuthHint } from "../src/components/App.js";
+import { toolLabel, argTitle, isReadOnlyTool, connectionAuthHint } from "../src/components/App.js";
 import { CAT_ROWS } from "../src/banner.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
@@ -221,6 +221,26 @@ describe("permission-gate classification", () => {
       "conn__gmail__gmail-send-email"]) {
       expect(isReadOnlyTool(t)).toBe(false);
     }
+  });
+});
+
+describe("tool receipts", () => {
+  it("inlines the embedded loop's key argument", () => {
+    expect(argTitle("Bash", { command: "mkdir -p src" })).toBe("Bash  mkdir -p src");
+    expect(argTitle("Write", { file_path: "/a/index.html" })).toBe("Write  /a/index.html");
+    expect(argTitle("list_apps", {})).toBe("list_apps");
+  });
+
+  it("prefers the pod's human title, falls back to the tool name", () => {
+    expect(toolLabel("Bash", "Run npm test")).toBe("Run npm test");
+    expect(toolLabel("Bash", "  ")).toBe("Bash");
+    expect(toolLabel("Write")).toBe("Write");
+  });
+
+  it("bounds a long title so a receipt head never wraps", () => {
+    const label = toolLabel("Bash", "x".repeat(200));
+    expect(label.length).toBe(76);
+    expect(label.endsWith("…")).toBe(true);
   });
 });
 
