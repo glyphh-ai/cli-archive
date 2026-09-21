@@ -106,9 +106,11 @@ export interface AppProps {
   /** Resume a server thread (`glyphh --thread <id>`): its messages seed the transcript
    *  and new turns keep appending to the SAME thread. */
   resumeThreadId?: string;
+  /** `--bridge`: this TUI fronts the Glyphh bridge at this URL (Claude Desktop's gateway and issuer). */
+  bridgeUrl?: string;
 }
 
-export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin, resumeThreadId }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin, resumeThreadId, bridgeUrl }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -631,7 +633,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         : null,
       email: account?.email ?? null,
       cwd,
-      notes: RELEASE_NOTES.length ? RELEASE_NOTES : [server.replace(/^https?:\/\//, "")],
+      notes: bridgeUrl
+        ? [`bridge mode · Claude Desktop → ${bridgeUrl}`, "gateway + issuer URL for Claude Desktop", ...(RELEASE_NOTES.length ? RELEASE_NOTES.slice(0, 1) : [])]
+        : (RELEASE_NOTES.length ? RELEASE_NOTES : [server.replace(/^https?:\/\//, "")]),
     }));
     if (items.length === 0) {
       out.push({ text: "Ask Glyphh anything, or type /help. Ctrl+C to quit.", style: "hint" });
@@ -646,7 +650,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       else out.push(...noteLines(item.text));
     }
     return out;
-  }, [items, expanded, width, version, account, cwd, server]);
+  }, [items, expanded, width, version, account, cwd, server, bridgeUrl]);
 
   const paneH = Math.max(3, rows - 1 - chromeH.strip);
   const maxScroll = Math.max(0, lines.length - paneH);

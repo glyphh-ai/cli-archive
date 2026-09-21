@@ -34,11 +34,13 @@ export interface BootProps {
   authLost?: { handler?: () => void };
   /** `--thread <id>` — the chat resumes this saved server thread. */
   resumeThreadId?: string;
+  /** `--bridge` — the bridge URL Claude Desktop points at, shown in the banner. */
+  bridgeUrl?: string;
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, loop, authLost, resumeThreadId }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, loop, authLost, resumeThreadId, bridgeUrl }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -128,6 +130,7 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
       initialAccount={account}
       onRelogin={onRelogin}
       {...(resumeThreadId ? { resumeThreadId } : {})}
+      {...(bridgeUrl ? { bridgeUrl } : {})}
     />
   );
 }

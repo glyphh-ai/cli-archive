@@ -48,8 +48,17 @@ function parseThreadArg(argv: string[]): string | undefined {
   return id;
 }
 
+/** `--bridge` — the TUI is the face of Bridge Mode (app/docs/BRIDGE-MODE.md §9):
+ *  the desktop app runs the bridge and opens this in a terminal panel with
+ *  GLYPHH_BRIDGE_URL set, so the banner names the URL Claude Desktop points at. */
+function parseBridgeArg(argv: string[]): string | undefined {
+  if (!argv.includes("--bridge")) return undefined;
+  return process.env.GLYPHH_BRIDGE_URL ?? "http://127.0.0.1:4747";
+}
+
 function main(): void {
   const resumeThreadId = parseThreadArg(process.argv.slice(2));
+  const bridgeUrl = parseBridgeArg(process.argv.slice(2));
   // The sign-out handler is LATE-BOUND: the client must exist before Boot renders,
   // but Boot owns the reaction (drop to the login gate). Boot registers into this box.
   const authLost: { handler?: () => void } = {};
@@ -73,6 +82,7 @@ function main(): void {
       loop={LOOP}
       authLost={authLost}
       {...(resumeThreadId ? { resumeThreadId } : {})}
+      {...(bridgeUrl ? { bridgeUrl } : {})}
     />,
   );
   waitUntilExit()
