@@ -147,7 +147,7 @@ function handlers(): { h: HarnessTurnHandlers; log: string[] } {
     onToolStart: (name, title) => log.push(`tool.start:${name}:${title ?? ""}`),
     onToolDone: (name, r) => log.push(`tool.done:${name}:${r.failed ? "failed" : "ok"}:${r.preview}`),
     onProgress: (up, down) => log.push(`progress:${up}/${down}`),
-    onCredits: (c) => log.push(`credits:${c}`),
+    onUsd: (usd) => log.push(`usd:${usd}`),
     onNote: (n) => log.push(`note:${n}`),
   };
   return { h, log };
@@ -243,12 +243,12 @@ describe("harness turn", () => {
     expect(pod.body).not.toHaveProperty("workdir");
   });
 
-  it("maps tool frames to start/done receipts and progress/credits to the strip", async () => {
+  it("maps tool frames to start/done receipts and progress/dollars to the strip", async () => {
     const pod = fakePod([
       frame({ type: "tool", phase: "start", name: "Bash", thought: "Run npm test" }),
       frame({ type: "tool", phase: "done", name: "Bash", failed: false, preview: "ok" }),
       frame({ type: "progress", inTokens: 120, outTokens: 40 }),
-      frame({ type: "credits", creditsMicro: 3_000_000 }),
+      frame({ type: "credits", usd: 0.03 }),
       frame({ type: "done", stopped: false }),
     ]);
     const { h, log } = handlers();
@@ -257,7 +257,7 @@ describe("harness turn", () => {
       "tool.start:Bash:Run npm test",
       "tool.done:Bash:ok:ok",
       "progress:120/40",
-      "credits:3",
+      "usd:0.03",
     ]);
   });
 
