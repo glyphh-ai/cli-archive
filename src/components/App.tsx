@@ -289,7 +289,10 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
       const startedAt = Date.now();
       turnStartedAt.current = startedAt;
       setElapsed(0);
-      setVerb(VERBS[nextId.current % VERBS.length]!);
+      // ONE verb per turn: the strip's "Verbing…" and the settle line's "Verbed"
+      // are the same pair (they disagreed when another item landed in between).
+      const v = VERBS[nextId.current % VERBS.length]!;
+      setVerb(v);
       push({ kind: "user", text: prompt });
       const turn: ChatTurn = { id: `t${nextId.current}`, text: "", status: "running", tokensUp: 0, tokensDown: 0 };
       setLast({ ...turn });
@@ -404,7 +407,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
         cost.current.tokensDown += turn.tokensDown;
         cost.current.durationMs += turn.durationMs;
         // The settle line under the answer: `* Verbed for 3.1s · 120↑ 480↓`.
-        const settleVerb = turn.status === "error" ? "Stalled" : turn.status === "stopped" ? "Stopped" : VERBS[nextId.current % VERBS.length]!.past;
+        const settleVerb = turn.status === "error" ? "Stalled" : turn.status === "stopped" ? "Stopped" : v.past;
         const parts = [settleVerb, `for ${(turn.durationMs / 1000).toFixed(1)}s`];
         if (turn.tokensUp || turn.tokensDown) parts.push(`· ${turn.tokensUp}↑ ${turn.tokensDown}↓`);
         push({ kind: "meta", text: `* ${parts.join(" ")}` });

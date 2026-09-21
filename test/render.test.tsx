@@ -18,7 +18,7 @@ import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
 import { toolLabel, connectionAuthHint, deleteWordBefore } from "../src/components/App.js";
-import { LOGO_NARROW, LOGO_WIDE, logoRows } from "../src/banner.js";
+import { LOGO_MARK, LOGO_NARROW, logoRows } from "../src/banner.js";
 import { SlashMenu } from "../src/components/SlashMenu.js";
 import { matchCommands, permissionLines } from "../src/commands.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
@@ -39,19 +39,20 @@ describe("TUI layout", () => {
     const wide = headerLines(120, logoRows(120), info).map((l) => l.text).join("\n");
     expect(wide).toContain("Glyphh v1.0.0"); // version in the border
     expect(wide).toContain("┌─"); // the hand-drawn outline
-    expect(wide).toContain(LOGO_WIDE[3]!.trim().slice(0, 4)); // the wide logo rendered
+    expect(wide).toContain(LOGO_NARROW[3]!.trim().slice(0, 4)); // the whole mark rendered (never the 14-row cut)
     expect(wide).toContain("Chris · Pro · chris@glyphh.ai");
     expect(wide).toContain("~/development/yo");
     expect(wide).toContain("model claude-sonnet-5 · api.glyphh.ai");
     expect(wide).toContain("What's new");
     expect(wide).toContain("Full-screen chat TUI");
-    // A medium terminal gets the narrow cut; a narrow one no logo at all —
-    // block art cannot downscale, so hiding beats mangling.
+    // A medium terminal gets the whole mark; a narrow one the mascot alone —
+    // block art cannot downscale, so cropping beats mangling.
     expect(logoRows(80)).toBe(LOGO_NARROW);
-    expect(logoRows(48)).toEqual([]);
+    expect(logoRows(48)).toBe(LOGO_MARK);
+    expect(LOGO_MARK.every((r) => [...r].length <= 16)).toBe(true);
     const narrow = headerLines(48, logoRows(48), info).map((l) => l.text).join("\n");
     expect(narrow).toContain("Glyphh v1.0.0");
-    expect(narrow).not.toContain(LOGO_NARROW[1]!.trim().slice(0, 3));
+    expect(narrow).toContain(LOGO_MARK[1]!.trim());
     for (const l of headerLines(48, logoRows(48), info)) expect([...l.text].length).toBeLessThanOrEqual(48);
     // Signed out: the card says so and how to fix it.
     const out = headerLines(80, [], { ...info, name: null, plan: null, email: null, model: null }).map((l) => l.text).join("\n");

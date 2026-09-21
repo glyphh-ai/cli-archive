@@ -28,6 +28,28 @@ function displayCwd(): string {
   return cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
 }
 
+/**
+ * SYNCHRONIZED OUTPUT (his report, 2026-09-21: "flickers constantly"). Ink 5
+ * redraws its whole frame on every render — erase the previous lines, write
+ * the new ones — and a terminal that paints between the two shows a blank
+ * flash. DEC mode 2026 brackets each write so the terminal paints the frame
+ * as one unit; iTerm2, kitty, WezTerm, Ghostty and xterm.js honour it, and
+ * the others ignore the two sequences.
+ */
+function synchronizedStdout(): NodeJS.WriteStream {
+  const real = process.stdout;
+  return new Proxy(real, {
+    get(target, key, receiver) {
+      if (key === "write") {
+        return (chunk: string | Uint8Array, ...rest: unknown[]): boolean =>
+          (target.write as (c: string | Uint8Array, ...r: unknown[]) => boolean).call(target, typeof chunk === "string" ? `\u001b[?2026h${chunk}\u001b[?2026l` : chunk, ...rest);
+      }
+      const v = Reflect.get(target, key, receiver) as unknown;
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+}
+
 function enterFullScreen(): void {
   process.stdout.write("\x1b[?1049h\x1b[?25l"); // alt screen + hide cursor
 }
@@ -63,6 +85,7 @@ function main(): void {
       {...(flags.permission ? { initialMode: flags.permission } : {})}
       {...(flags.prompt ? { initialPrompt: flags.prompt } : {})}
     />,
+    { stdout: synchronizedStdout() },
   );
   waitUntilExit()
     .then(restore)

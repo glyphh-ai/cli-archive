@@ -7,7 +7,6 @@
 
 import React from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 import { theme } from "../theme.js";
 import type { ChatTurn } from "../types.js";
 
@@ -22,15 +21,18 @@ export interface SubFooterProps {
   verb: { ing: string; past: string };
 }
 
+/** The spinner's frames — stepped by the turn clock (4 fps), not a timer of
+ *  its own: every frame is a full Ink redraw, so a fast spinner is a flicker. */
+const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps): React.ReactElement {
   if (busy && last) {
     const burn = last.tokensUp + last.tokensDown > 0 ? ` · ${last.tokensUp}↑ ${last.tokensDown}↓ tok` : "";
+    const frame = FRAMES[Math.floor(elapsed * 4) % FRAMES.length]!;
     return (
       <Box width={width} paddingX={1} flexDirection="column">
         <Text>
-          <Text color={theme.accent}>
-            <Spinner type="dots" />
-          </Text>
+          <Text color={theme.accent}>{frame}</Text>
           <Text color={theme.muted}> {verb.ing}… </Text>
           <Text color={theme.faint}>
             ({elapsed.toFixed(1)}s{burn} · esc to stop)
