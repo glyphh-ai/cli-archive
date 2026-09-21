@@ -76,15 +76,17 @@ export function listGlyphhChats(file: string, limit = 20): StoredChat[] {
     .slice(0, limit);
 }
 
-/** Save ONE chat the desktop's way: merge by id, the newer updatedAt wins, order kept. */
-export function saveChat(file: string, chat: StoredChat): void {
+/** Save ONE chat the desktop's way: merge by id, the newer updatedAt wins, order
+ *  kept. Launched by the desktop, this terminal is the seat the user is looking
+ *  at, so the store's CURRENT chat follows it — the hop back opens this chat. */
+export function saveChat(file: string, chat: StoredChat, opts: { current?: boolean } = {}): void {
   try {
     const have = loadStore(file);
     const cur = have.chats.find((c) => c.id === chat.id);
     if (cur && (cur.updatedAt ?? 0) > (chat.updatedAt ?? 0)) return; // the desktop wrote something newer
     const chats = cur ? have.chats.map((c) => (c.id === chat.id ? chat : c)) : [chat, ...have.chats];
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ chats, currentId: have.currentId }), "utf-8");
+    writeFileSync(file, JSON.stringify({ chats, currentId: opts.current ? chat.id : have.currentId }), "utf-8");
   } catch {
     /* a failed save loses nothing but the shared recents — the transcript stands */
   }

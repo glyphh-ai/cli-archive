@@ -17,7 +17,7 @@ import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
-import { toolLabel, connectionAuthHint, deleteWordBefore } from "../src/components/App.js";
+import { toolLabel, connectionAuthHint, deleteWordBefore, approvalSpec } from "../src/components/App.js";
 import { LOGO_MARK, LOGO_NARROW, logoRows } from "../src/banner.js";
 import { Picker } from "../src/components/Picker.js";
 import { SlashMenu } from "../src/components/SlashMenu.js";
@@ -276,5 +276,17 @@ describe("connection-auth hint", () => {
 
   it("returns null for a normal (non-auth) tool error", () => {
     expect(connectionAuthHint("Bash", "command not found: foo")).toBeNull();
+  });
+});
+
+describe("approval selector", () => {
+  it("asks the other CLIs' question: yes · yes and don't ask again · no, and answers accordingly", () => {
+    const answers: Array<[boolean, boolean]> = [];
+    const spec = approvalSpec({ id: "c:g1", kind: "command", title: "bash npm test", detail: "{\n  command: npm test\n}" }, (allow, always) => answers.push([allow, always]));
+    expect(spec.title).toBe("Allow this command?");
+    expect(spec.options.map((o) => o.id)).toEqual(["yes", "always", "no"]);
+    expect(spec.options[1]!.label).toContain("don't ask again for commands");
+    spec.onPick("yes", false); spec.onPick("always", false); spec.onPick("no", false); spec.onCancel?.();
+    expect(answers).toEqual([[true, false], [true, true], [false, false], [false, false]]);
   });
 });

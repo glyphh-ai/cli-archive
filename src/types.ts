@@ -30,7 +30,6 @@ export interface ChatTurn {
 
 /** One transcript item (flattened to lines at render time). */
 export type Item =
-  | { id: string; kind: "header" }
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "command"; text: string; result?: string[] }
   | { id: string; kind: "section"; step: TurnStep }

@@ -19,6 +19,7 @@ import { render } from "ink";
 import { Boot } from "./components/Boot.js";
 import { makeClient, serverUrl } from "./glyphh.js";
 import { parseFlags } from "./flags.js";
+import { createFullscreenStdout } from "./render/fullscreen.js";
 
 const VERSION = process.env.npm_package_version ?? "1.0.0";
 
@@ -29,35 +30,14 @@ function displayCwd(): string {
   return cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
 }
 
-/**
- * SYNCHRONIZED OUTPUT (his report, 2026-09-21: "flickers constantly"). Ink 5
- * redraws its whole frame on every render — erase the previous lines, write
- * the new ones — and a terminal that paints between the two shows a blank
- * flash. DEC mode 2026 brackets each write so the terminal paints the frame
- * as one unit; iTerm2, kitty, WezTerm, Ghostty and xterm.js honour it, and
- * the others ignore the two sequences.
- */
-function synchronizedStdout(): NodeJS.WriteStream {
-  const real = process.stdout;
-  return new Proxy(real, {
-    get(target, key, receiver) {
-      if (key === "write") {
-        return (chunk: string | Uint8Array, ...rest: unknown[]): boolean =>
-          (target.write as (c: string | Uint8Array, ...r: unknown[]) => boolean).call(target, typeof chunk === "string" ? `\u001b[?2026h${chunk}\u001b[?2026l` : chunk, ...rest);
-      }
-      const v = Reflect.get(target, key, receiver) as unknown;
-      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
-    },
-  });
+/** THE SCREEN: the alternate buffer, full height, cursor hidden, the wheel's
+ *  arrow translation off (↑/↓ are prompt history; pgup/pgdn scroll). Ink's
+ *  frames go through the line-diff renderer (render/fullscreen.ts). */
+function enterScreen(): void {
+  process.stdout.write("\x1b[?1049h\x1b[?1007l\x1b[?25l\x1b[H\x1b[2J");
 }
-
-/** The transcript lives in the terminal's own scrollback (no alternate screen),
- *  so a finished run reads back with the shell's history, like the other CLIs. */
-function hideCursor(): void {
-  process.stdout.write("\x1b[?25l");
-}
-function showCursor(): void {
-  process.stdout.write("\x1b[?25h");
+function leaveScreen(): void {
+  process.stdout.write("\x1b[?25h\x1b[?1007h\x1b[?1049l");
 }
 
 function main(): void {
@@ -66,12 +46,12 @@ function main(): void {
   // but Boot owns the reaction (drop to the login gate). Boot registers into this box.
   const authLost: { handler?: () => void } = {};
   const client = makeClient({ onSignedOut: () => authLost.handler?.() });
-  hideCursor();
+  enterScreen();
   let restored = false;
   const restore = () => {
     if (!restored) {
       restored = true;
-      showCursor();
+      leaveScreen();
     }
   };
   process.on("exit", restore);
@@ -90,7 +70,7 @@ function main(): void {
       {...(flags.resume ? { resumeId: flags.resume } : {})}
       {...(flags.continueLast ? { continueLast: true } : {})}
     />,
-    { stdout: synchronizedStdout() },
+    { stdout: createFullscreenStdout(process.stdout) },
   );
   waitUntilExit()
     .then(restore)
