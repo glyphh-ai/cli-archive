@@ -8,11 +8,11 @@
  */
 
 import React, { useCallback, useEffect, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import type { Client } from "@glyphh/sdk";
 import { theme } from "../theme.js";
-import { CAT_ROWS } from "../banner.js";
+import { logoRows } from "../banner.js";
 import { openBrowser } from "../open-browser.js";
 
 interface Prompt {
@@ -28,6 +28,9 @@ type Phase =
 
 export function Login({ client, onAuthed }: { client: Client; onAuthed: () => void }): React.ReactElement {
   const { exit } = useApp();
+  const { stdout } = useStdout();
+  // The block logo when the terminal holds it; the wordmark alone when it does not.
+  const logo = logoRows(stdout.columns || 80);
   const [phase, setPhase] = useState<Phase>({ kind: "starting" });
   const [attempt, setAttempt] = useState(0);
 
@@ -77,7 +80,7 @@ export function Login({ client, onAuthed }: { client: Client; onAuthed: () => vo
   return (
     <Box flexDirection="column" alignItems="center" justifyContent="center" flexGrow={1} paddingY={2}>
       <Text color={theme.text} bold>
-        {CAT_ROWS.join("\n")}
+        {logo.length ? logo.join("\n") : "G L Y P H H"}
       </Text>
       <Box marginTop={1}>
         <Text color={theme.accent} bold>
