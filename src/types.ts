@@ -4,7 +4,7 @@
  * types.ts — the TUI's view model, derived purely from wire events. The chat is a
  * list of ITEMS (user lines, step sections, answers, notes, cards, commands) that
  * flatten to styled lines at render time (lines.ts); a turn accrues step receipts
- * while it streams and settles with per-turn meta (duration + tokens + credits).
+ * while it streams and settles with per-turn meta (duration + tokens + dollars).
  */
 
 export type TurnStatus = "running" | "done" | "refused" | "error" | "stopped";
@@ -29,8 +29,8 @@ export interface ChatTurn {
   durationMs?: number;
   tokensUp: number;
   tokensDown: number;
-  /** Credits consumed this turn (whole credits), once known. */
-  credits: number | null;
+  /** Dollars metered this turn, once known (credits are dead, 2026-09-20). */
+  usd: number | null;
   /** Real USD cost of this turn from the SDK result usage, once known. */
   costUsd?: number;
   stubbed: boolean;

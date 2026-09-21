@@ -79,7 +79,7 @@ export function answerLines(text: string, width: number): Line[] {
   ];
 }
 
-/** The settle line under a finished turn: `* Verbed for 3.1s · ◈ 2 credits`. */
+/** The settle line under a finished turn: `* Verbed for 3.1s · ◈ $0.0120`. */
 export function metaLines(text: string): Line[] {
   return [{ text: `  ${text}`, style: "meta" }];
 }

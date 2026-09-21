@@ -50,8 +50,6 @@ const POLL_MS = { local: 120, cloud: 400 } as const;
 const READY_POLL_MS = 1000;
 const READY_POLL_TRIES = 45;
 
-/** Micro-credits → whole credits (the server's `microToCredits`). */
-const MICRO = 1_000_000;
 
 /** The name the server's `/mcp` surface is lent under (`glyphh` is reserved by
  *  the pod for its own ask_user server). Tools arrive as `mcp__platform__*`. */
@@ -91,8 +89,8 @@ export interface HarnessTurnHandlers {
   onToolDone: (name: string, result: ToolDone) => void;
   /** Live token accounting for the status strip. */
   onProgress?: (up: number, down: number) => void;
-  /** Metered price so far, in WHOLE credits (pod v1 never emits this). */
-  onCredits?: (credits: number) => void;
+  /** Metered price so far, in dollars, the contract's `credits` frame (pod v1 never emits it). */
+  onUsd?: (usd: number) => void;
   /** The run is PARKED on an approval; call `answer` to resume it. */
   onApproval?: (req: ApprovalRequest, answer: (allow: boolean) => void) => void;
   /** The run is PARKED on a question; call `answer` to resume it. */
@@ -429,7 +427,7 @@ function route(
       h.onProgress?.(frame.inTokens, frame.outTokens);
       return;
     case "credits":
-      h.onCredits?.(Math.round(frame.creditsMicro / MICRO));
+      h.onUsd?.(frame.usd);
       return;
     case "approval":
       // The run is PARKED pod-side. If nothing can answer, deny immediately

@@ -4,7 +4,7 @@
  * SubFooter.tsx — the status strip pinned between the transcript and the
  * composer. While a turn runs it carries the LIVE signal (spinner · verbing ·
  * elapsed · token burn); when idle it holds exactly one line — the last turn's
- * cost (✻ Verbed for Ns · tokens · ◈ credits). The transcript stays pure
+ * cost (✻ Verbed for Ns · tokens · ◈ $). The transcript stays pure
  * content while "what's happening right now" always sits in the same place.
  */
 
@@ -46,7 +46,7 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
     const cost: string[] = [];
     if (last.durationMs !== undefined) cost.push(`${verb.past} for ${(last.durationMs / 1000).toFixed(1)}s`);
     if (last.tokensUp + last.tokensDown > 0) cost.push(`${last.tokensUp}↑ ${last.tokensDown}↓ tok`);
-    if (last.credits !== null) cost.push(`◈ ${last.credits} credit${last.credits === 1 ? "" : "s"}`);
+    if (last.usd !== null) cost.push(`◈ $${last.usd.toFixed(4)}`);
     if (last.status === "refused") cost.push("refused");
     if (last.status === "error") cost.push("failed");
     return (

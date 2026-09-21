@@ -371,7 +371,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         status: "running",
         tokensUp: 0,
         tokensDown: 0,
-        credits: null,
+        usd: null,
         stubbed: false,
         degraded: false,
       };
@@ -491,8 +491,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
               onToolStart: sink.toolStart,
               onToolDone: sink.toolDone,
               onProgress: sink.progress,
-              onCredits: (credits) => {
-                turn.credits = credits;
+              onUsd: (usd) => {
+                turn.usd = usd;
                 setLast({ ...turn });
               },
               // The pod PARKED the run: the strip takes the keyboard until the
@@ -534,14 +534,14 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
         }
         turn.durationMs = Date.now() - startedAt;
         setLast({ ...turn });
-        // The settle line under the answer: `* Verbed for 3.1s` (+ credits when known).
+        // The settle line under the answer: `* Verbed for 3.1s` (+ dollars when known).
         const settleVerb =
           turn.status === "error" ? "Stalled" : turn.status === "stopped" ? "Stopped" : VERBS[nextId.current % VERBS.length]!.past;
         const parts = [
           settleVerb,
           `for ${(turn.durationMs / 1000).toFixed(1)}s`,
         ];
-        if (turn.credits !== null) parts.push(`· ◈ ${turn.credits} credit${turn.credits === 1 ? "" : "s"}`);
+        if (turn.usd !== null) parts.push(`· ◈ $${turn.usd.toFixed(4)}`);
         push({ kind: "meta", text: `* ${parts.join(" ")}` });
       } catch (err) {
         // The pod wouldn't start / went away mid-turn: ONE honest line in the
