@@ -483,7 +483,13 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     return out;
   }, [items, expanded, width, version, account, cwd, server, bridgeUrl]);
 
-  const paneH = Math.max(3, rows - 1 - chromeH.strip);
+  // ONE ROW SHORT OF THE TERMINAL, always (his report, 2026-09-21: "twitchy,
+  // flickering even when the user types"). Ink clears the WHOLE screen before
+  // every frame once the output is as tall as the terminal, and a full-screen
+  // root box is exactly that tall — so every keystroke wiped and redrew. Below
+  // that line Ink diffs and rewrites only the rows that changed.
+  const frameH = Math.max(4, rows - 1);
+  const paneH = Math.max(3, frameH - 1 - chromeH.strip);
   const maxScroll = Math.max(0, lines.length - paneH);
   const clampedScroll = Math.min(scroll, maxScroll);
   const start = Math.max(0, lines.length - paneH - clampedScroll);
@@ -575,7 +581,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   const slots: FooterSlot[] = [{ label: "model", model: sessionModel ?? pickedModel ?? orgDefault }];
 
   return (
-    <Box flexDirection="column" width={cols} height={rows}>
+    <Box flexDirection="column" width={cols} height={frameH}>
       {/* ONE scroll surface — the banner is its first content, so the whole
           page above the strip scrolls. minHeight={0} is load-bearing: a
           flexGrow child defaults to min-height:auto (its content size), so
