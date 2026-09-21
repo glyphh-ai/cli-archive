@@ -30,13 +30,12 @@ export interface ChatTurn {
 
 /** One transcript item (flattened to lines at render time). */
 export type Item =
+  | { id: string; kind: "header" }
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "command"; text: string; result?: string[] }
   | { id: string; kind: "section"; step: TurnStep }
   | { id: string; kind: "answer"; text: string }
-  | { id: string; kind: "meta"; text: string }
-  | { id: string; kind: "note"; text: string }
-  | { id: string; kind: "card"; title: string; body: string[] };
+  | { id: string; kind: "note"; text: string };
 
 /** THE PERMISSION MODES — the same four every agent CLI speaks (his order,
  *  2026-09-21): default asks before edits and commands, acceptEdits edits

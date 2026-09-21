@@ -1,24 +1,29 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * App.tsx — the full-screen chat. ONE scroll surface (the welcome card, then
- * the transcript) above a pinned strip (status, a parked approval or selector,
- * the slash menu, the composer, the footer). A turn is the Glyphh loop itself
- * (loop.ts) running in this process on the gateway: text streams live, tool
- * calls land as collapsible receipts, and a permission ask parks the run.
+ * App.tsx — the chat, drawn the way the other agent CLIs draw it: SETTLED
+ * transcript is printed ONCE into the terminal's own scrollback (Ink's
+ * <Static>), and only a small LIVE region redraws — the turn in flight and
+ * the strip (status, a parked approval or selector, the slash menu, the
+ * composer, the footer). That is the whole cure for flicker: Ink erases and
+ * rewrites everything it manages on every frame, so what it manages must stay
+ * small (his reports, 2026-09-21). No alternate screen; the terminal scrolls.
+ * A turn is the Glyphh loop itself (loop.ts) running in this process on the
+ * gateway: text streams live (batched), tool calls land as collapsible
+ * receipts, and a permission ask parks the run.
  *
  * The conversation is SHARED WITH THE DESKTOP (sessions.ts): it opens from the
  * same store the Agent panel reads and every answer is written back to it.
  *
  * Keys, the way every agent CLI has them: enter sends; ↑/↓ recall prompts;
  * ←/→ move the cursor (ctrl+a/e, ctrl+w, ctrl+u); shift+tab cycles the
- * permission chip; esc stops the turn; ctrl+o expands tool output; pgup/pgdn
- * scroll; ctrl+c clears the line, twice quits; "/" opens the command menu;
+ * permission chip; esc stops the turn; ctrl+o expands tool output; ctrl+c
+ * clears the line, twice quits; "/" opens the command menu;
  * "?" on an empty line shows the shortcuts.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
+import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
 import type { Client } from "@glyphh/sdk";
 import { runLoopTurn, type ApprovalRequest } from "../loop.js";
 import { defaultModel } from "../models.js";
@@ -129,6 +134,9 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   const [cols, setCols] = useState(stdout.columns || 80);
   const [rows, setRows] = useState(stdout.rows || 24);
   const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
+  /** Printed once, never redrawn (Ink Static). The welcome card is item one. */
+  const [settled, setSettled] = useState<Item[]>([]);
+  /** The turn or command in flight — the only transcript Ink redraws. */
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -136,11 +144,8 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   const [last, setLast] = useState<ChatTurn | undefined>(undefined);
   const [verb, setVerb] = useState(VERBS[0]!);
   const [elapsed, setElapsed] = useState(0);
-  /** Tool receipts are collapsed by default; ctrl+o toggles them all open. */
+  /** Tool receipts are collapsed by default; ctrl+o opens them (live + future ones). */
   const [expanded, setExpanded] = useState(false);
-  /** Lines scrolled up from the tail; 0 = follow mode. */
-  const [scroll, setScroll] = useState(0);
-  const [chromeH, setChromeH] = useState({ strip: 6 });
   const [mode, setMode] = useState<PermissionMode>(() => initialMode ?? readPrefs().permissionMode ?? "default");
   // THE MODEL: the device's persisted pick (/model), a session pick (--model, s
   // in the selector) over it, and the org's default underneath.
@@ -160,7 +165,6 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   const turnAbort = useRef<AbortController | null>(null);
   const inputRef = useRef("");
   const cursorRef = useRef(0);
-  const stripBox = useRef<DOMElement | null>(null);
   const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const chatRef = useRef(chat);
   chatRef.current = chat;
@@ -204,12 +208,6 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     return () => clearInterval(t);
   }, [busy]);
 
-  // Real chrome heights each frame — the viewport height is exact, not guessed.
-  useEffect(() => {
-    const strip = stripBox.current ? measureElement(stripBox.current).height : chromeH.strip;
-    if (strip !== chromeH.strip) setChromeH({ strip });
-  });
-
   // The org's default model → the footer chip when nothing is picked.
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +223,14 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
 
   const patchItem = useCallback((id: string, fn: (item: Item) => Item) => {
     setItems((l) => l.map((it) => (it.id === id ? fn(it) : it)));
+  }, []);
+
+  /** The live transcript is finished: print it into scrollback for good. */
+  const settle = useCallback(() => {
+    setItems((live) => {
+      if (live.length) setSettled((s) => [...s, ...live]);
+      return [];
+    });
   }, []);
 
   const setLine = useCallback((value: string, at?: number) => {
@@ -263,17 +269,27 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   }, []);
 
   /** Show a stored chat: transcript + the loop's seed. */
+  /** Wipe the terminal, scrollback included, so a new conversation starts clean
+   *  (Static items already printed cannot be un-printed any other way). */
+  const clearScreen = useCallback(() => {
+    stdout.write("\u001b[2J\u001b[3J\u001b[H");
+    setSettled([]);
+    setItems([]);
+    setExpanded(false);
+    setLast(undefined);
+    headerShown.current = false;
+  }, [stdout]);
+
   const showChat = useCallback((c: StoredChat) => {
     const convo = conversationOf(c);
     history.current = convo.map((m) => ({ role: m.role, content: m.text }));
-    setItems([]);
-    setExpanded(false);
-    setScroll(0);
-    setLast(undefined);
-    for (const m of convo) push(m.role === "user" ? { kind: "user", text: m.text } : { kind: "answer", text: m.text });
+    clearScreen();
     setChat(c);
     chatRef.current = c;
-  }, [push]);
+    // The earlier turns print once, straight into scrollback.
+    const seeded: Item[] = convo.map((m, i) => (m.role === "user" ? { id: `s${i}`, kind: "user", text: m.text } : { id: `s${i}`, kind: "answer", text: m.text }));
+    setSettled(seeded);
+  }, [clearScreen]);
 
   /** /resume <id> and --resume: the chat from the shared store, or why not. */
   const resumeChat = useCallback(async (id: string): Promise<string[]> => {
@@ -293,6 +309,24 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     if (target) showChat(target);
     else if (resumeId) push({ kind: "note", text: `no conversation ${resumeId} in this account's store — starting fresh` });
   }, [sessionsFile, resumeId, continueLast, showChat, push]);
+
+  // THE WELCOME CARD prints once, when the model is known (or after a beat), so
+  // it is right the one time it is drawn.
+  const headerShown = useRef(false);
+  const [headerReady, setHeaderReady] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setHeaderReady(true), 1200);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (orgDefault !== null) setHeaderReady(true);
+  }, [orgDefault]);
+  useEffect(() => {
+    if (!headerReady || headerShown.current) return;
+    headerShown.current = true;
+    setSettled((s) => [{ id: `h${Date.now().toString(36)}`, kind: "header" }, ...s]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerReady]);
 
   const openPicker = useCallback((spec: PickerSpec) => {
     const cur = Math.max(0, spec.options.findIndex((o) => o.current));
@@ -324,20 +358,33 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
           let segText = "";
           let text = "";
           const toolItems = new Map<string, string[]>();
+          // Deltas paint in BATCHES (~25 fps): a frame per token is a redraw per
+          // token, and redraws are what flicker.
+          let pendingDelta = "";
+          let flushTimer: ReturnType<typeof setTimeout> | null = null;
+          const flushDelta = (): void => {
+            flushTimer = null;
+            const t = pendingDelta;
+            pendingDelta = "";
+            if (!t) return;
+            if (!segId) {
+              segText = t.replace(/^\s+/, "");
+              if (!segText) return;
+              segId = push({ kind: "answer", text: segText });
+              return;
+            }
+            segText += t;
+            const id = segId;
+            patchItem(id, (it) => ({ ...it, text: segText }) as Item);
+          };
           const sink = {
             delta: (t: string) => {
               text += t;
-              if (!segId) {
-                segText = t.replace(/^\s+/, "");
-                if (!segText) return;
-                segId = push({ kind: "answer", text: segText });
-                return;
-              }
-              segText += t;
-              const id = segId;
-              patchItem(id, (it) => ({ ...it, text: segText }) as Item);
+              pendingDelta += t;
+              if (!flushTimer) flushTimer = setTimeout(flushDelta, 40);
             },
             toolStart: (name: string, title?: string) => {
+              if (flushTimer) { clearTimeout(flushTimer); flushDelta(); }
               segId = null;
               const id = push({ kind: "section", step: { label: toolLabel(name, title), ok: true, details: [] } });
               const queue = toolItems.get(name) ?? [];
@@ -393,6 +440,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
               onNote: (note) => push({ kind: "note", text: note }),
             },
           );
+          if (flushTimer) { clearTimeout(flushTimer); flushDelta(); }
           text = result.text || text;
           turn.text = text;
           const stopped = result.stopped || abort.signal.aborted;
@@ -437,9 +485,10 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
         turnAbort.current = null;
         setPending((p) => (p?.kind === "approval" ? null : p)); // a parked approval dies with its run
         setBusy(false);
+        settle(); // the turn is history now — printed once, redrawn never
       }
     },
-    [client, cwd, orgDefault, patchItem, push, sessionsFile],
+    [client, cwd, orgDefault, patchItem, push, sessionsFile, settle],
   );
 
   const stopTurn = useCallback(() => {
@@ -468,10 +517,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
           const fresh = newChat(cwd, modeRef.current);
           setChat(fresh);
           chatRef.current = fresh;
-          setItems([]);
-          setExpanded(false);
-          setScroll(0);
-          setLast(undefined);
+          clearScreen();
         },
         quit: () => exit(),
         ...(onRelogin ? { relogin: onRelogin } : {}),
@@ -483,8 +529,9 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
       };
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
+      settle();
     },
-    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setTheme, version, onRelogin, sessionModel, pickedModel, openPicker, sessionsFile, resumeChat],
+    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setTheme, version, onRelogin, sessionModel, pickedModel, openPicker, sessionsFile, resumeChat, clearScreen, settle],
   );
 
   const submit = useCallback(() => {
@@ -497,10 +544,11 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     if (!account) {
       push({ kind: "user", text: raw });
       push({ kind: "note", text: "Not logged in · run /login to sign in" });
+      settle();
       return;
     }
     void runTurn(raw);
-  }, [account, busy, push, runCommand, runTurn, setLine]);
+  }, [account, busy, push, runCommand, runTurn, setLine, settle]);
 
   const openingSent = useRef(false);
   useEffect(() => {
@@ -509,49 +557,37 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     void runTurn(initialPrompt);
   }, [initialPrompt, account, runTurn]);
 
-  // ── The line model — regenerated from items, so a fold toggle is retroactive. ──
+  // ── Lines per item. Settled items render ONCE (Static); live ones every frame. ──
   const width = Math.max(20, cols - 4);
   const effectiveModel = sessionModel ?? pickedModel ?? orgDefault;
-  const lines = useMemo(() => {
-    const out: Line[] = [];
-    out.push(...headerLines(width, LOGO_MARK, {
-      version,
-      name: account ? (account.name ?? account.email) : null,
-      plan: account ? `${account.tier.charAt(0).toUpperCase()}${account.tier.slice(1)}` : null,
-      email: account?.email ?? null,
-      cwd,
-      model: effectiveModel,
-      server: server.replace(/^https?:\/\//, ""),
-      tips: items.length ? [] : TIPS,
-      notes: bridgeUrl
-        ? [`bridge mode · Claude Desktop → ${bridgeUrl}`, ...RELEASE_NOTES.slice(0, 2)]
-        : RELEASE_NOTES,
-    }));
-    for (const item of items) {
-      if (item.kind === "user") out.push(...userLines(item.text, width));
-      else if (item.kind === "command") out.push(...commandLines(item.text, item.result, width));
-      else if (item.kind === "section") out.push(...sectionLines(item.step, expanded));
-      else if (item.kind === "answer") out.push(...answerLines(item.text, width));
-      else if (item.kind === "meta") out.push(...noteLines(item.text));
-      else if (item.kind === "card") out.push(...noteLines(`${item.title}: ${item.body.join(" ")}`));
-      else out.push(...noteLines(item.text));
+  const linesFor = useCallback((item: Item, open: boolean): Line[] => {
+    if (item.kind === "header") {
+      return headerLines(width, LOGO_MARK, {
+        version,
+        name: account ? (account.name ?? account.email) : null,
+        plan: account ? `${account.tier.charAt(0).toUpperCase()}${account.tier.slice(1)}` : null,
+        email: account?.email ?? null,
+        cwd,
+        model: effectiveModel,
+        server: server.replace(/^https?:\/\//, ""),
+        tips: TIPS,
+        notes: bridgeUrl ? [`bridge mode · Claude Desktop → ${bridgeUrl}`, ...RELEASE_NOTES.slice(0, 2)] : RELEASE_NOTES,
+      });
     }
-    return out;
-  }, [items, expanded, width, version, account, cwd, server, bridgeUrl, effectiveModel]);
+    if (item.kind === "user") return userLines(item.text, width);
+    if (item.kind === "command") return commandLines(item.text, item.result, width);
+    if (item.kind === "section") return sectionLines(item.step, open);
+    if (item.kind === "answer") return answerLines(item.text, width);
+    return noteLines(item.text);
+  }, [width, version, account, cwd, effectiveModel, server, bridgeUrl]);
 
-  // ONE ROW SHORT OF THE TERMINAL, always: Ink clears the whole screen before
-  // every frame once the output is as tall as the terminal.
-  const frameH = Math.max(4, rows - 1);
-  const paneH = Math.max(3, frameH - 1 - chromeH.strip);
-  const maxScroll = Math.max(0, lines.length - paneH);
-  const clampedScroll = Math.min(scroll, maxScroll);
-  const start = Math.max(0, lines.length - paneH - clampedScroll);
-  const visible = lines.slice(start, start + paneH);
-
-  const scrollBy = useCallback(
-    (d: number) => setScroll((s) => Math.max(0, Math.min(Math.max(0, lines.length - paneH), s + d))),
-    [lines.length, paneH],
-  );
+  // THE LIVE WINDOW stays well under the terminal's height: past that Ink
+  // clears the whole screen every frame. A long streaming answer shows its
+  // tail; the whole of it prints when the turn settles.
+  const liveLines = useMemo(() => items.flatMap((it) => linesFor(it, expanded)), [items, linesFor, expanded]);
+  const liveMax = Math.max(4, rows - 14);
+  const hiddenLive = Math.max(0, liveLines.length - liveMax);
+  const liveVisible = hiddenLive ? liveLines.slice(hiddenLive) : liveLines;
 
   const slashPrefix = /^\/(\S*)$/.exec(input)?.[1];
   const slashItems = slashPrefix !== undefined && !busy && !pending ? matchCommands(slashPrefix) : [];
@@ -636,8 +672,6 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     if (key.tab) return;
     if (key.upArrow) { recall(-1); return; }
     if (key.downArrow) { recall(1); return; }
-    if (key.pageUp) { scrollBy(paneH - 1); return; }
-    if (key.pageDown) { scrollBy(-(paneH - 1)); return; }
     if (key.leftArrow) { setLine(inputRef.current, cursorRef.current - 1); return; }
     if (key.rightArrow) { setLine(inputRef.current, cursorRef.current + 1); return; }
     if (key.ctrl && ch === "a") { setLine(inputRef.current, 0); return; }
@@ -681,14 +715,21 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   const slots: FooterSlot[] = [{ label: "model", model: effectiveModel }];
 
   return (
-    <Box flexDirection="column" width={cols} height={frameH}>
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} paddingX={1} overflow="hidden">
-        {visible.map((l, i) => <TranscriptLine key={`${start + i}`} line={l} />)}
+    <Box flexDirection="column" width={cols}>
+      {/* SETTLED: printed once into scrollback; Ink never touches these lines again. */}
+      <Static items={settled}>
+        {(item) => (
+          <Box key={item.id} flexDirection="column" paddingX={1}>
+            {linesFor(item, expanded).map((l, i) => <TranscriptLine key={`${item.id}-${i}`} line={l} />)}
+          </Box>
+        )}
+      </Static>
+      {/* LIVE: the turn in flight, bounded, then the strip. */}
+      <Box flexDirection="column" paddingX={1}>
+        {hiddenLive ? <Text color={theme.faint}>{`  … ${hiddenLive} earlier lines of this turn (they print in full when it finishes)`}</Text> : null}
+        {liveVisible.map((l, i) => <TranscriptLine key={`live-${hiddenLive + i}`} line={l} />)}
       </Box>
-      {clampedScroll > 0 ? (
-        <Text color={theme.faint}>{`  ↓ ${clampedScroll} lines below · pgup/pgdn scrolls`}</Text>
-      ) : null}
-      <Box flexDirection="column" flexShrink={0} ref={stripBox}>
+      <Box flexDirection="column" flexShrink={0}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
         {pending?.kind === "approval" ? (
           <Box flexDirection="column" paddingX={1}>

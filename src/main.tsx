@@ -51,11 +51,13 @@ function synchronizedStdout(): NodeJS.WriteStream {
   });
 }
 
-function enterFullScreen(): void {
-  process.stdout.write("\x1b[?1049h\x1b[?25l"); // alt screen + hide cursor
+/** The transcript lives in the terminal's own scrollback (no alternate screen),
+ *  so a finished run reads back with the shell's history, like the other CLIs. */
+function hideCursor(): void {
+  process.stdout.write("\x1b[?25l");
 }
-function leaveFullScreen(): void {
-  process.stdout.write("\x1b[?25h\x1b[?1049l"); // show cursor + restore screen
+function showCursor(): void {
+  process.stdout.write("\x1b[?25h");
 }
 
 function main(): void {
@@ -64,12 +66,12 @@ function main(): void {
   // but Boot owns the reaction (drop to the login gate). Boot registers into this box.
   const authLost: { handler?: () => void } = {};
   const client = makeClient({ onSignedOut: () => authLost.handler?.() });
-  enterFullScreen();
+  hideCursor();
   let restored = false;
   const restore = () => {
     if (!restored) {
       restored = true;
-      leaveFullScreen();
+      showCursor();
     }
   };
   process.on("exit", restore);

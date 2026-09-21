@@ -108,7 +108,7 @@ const COMMANDS: SlashCommand[] = [
         ...COMMANDS.map((c) => `/${c.name}${c.usage ? c.usage.slice(c.name.length + 1) : ""} — ${c.summary}`),
         "",
         "keys: enter send · shift+tab permission mode · esc stop the turn · ctrl+o expand tool output",
-        "      ↑/↓ prompt history · pgup/pgdn scroll · ctrl+c clear the line, twice to quit",
+        "      ↑/↓ prompt history · the terminal scrolls · ctrl+c clear the line, twice to quit",
       ];
     },
   },
