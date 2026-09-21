@@ -1,13 +1,10 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * Boot.tsx — the startup gate. It resolves the two things that must be settled before the
- * chat can open — a session and a theme — then hands off to the App:
- *
- *   loading → (no session) login → (first run) theme → chat
- *
- * A returning, signed-in user with a saved theme falls straight through to chat. The saved
- * theme is applied before anything paints, so even the login screen wears the user's colors.
+ * Boot.tsx — the gate in front of the App: resolve the saved session, else the
+ * device login; pick a theme on first run; then the chat. A session that dies
+ * mid-flight (expired / revoked refresh) drops back here from anywhere, and the
+ * loop's conversations and credential die with it.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
@@ -19,35 +16,38 @@ import { ThemePicker } from "./ThemePicker.js";
 import { readPrefs, writePrefs } from "../prefs.js";
 import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
-import { resetMcpGrant } from "../mcp-grant.js";
-import { resetHarnessHost } from "../harness.js";
+import { resetLoop } from "../loop.js";
 import { startMachineHost, stopMachineHost } from "../machine-host.js";
+import type { PermissionMode } from "../types.js";
 
 export interface BootProps {
   client: Client;
   version: string;
   server: string;
   cwd: string;
-  loop: string;
   /** The late-bound box main.tsx gave the client's onSignedOut — Boot registers the
    *  reaction here: when the refresh chain dies MID-SESSION, drop to the login gate. */
   authLost?: { handler?: () => void };
-  /** `--thread <id>` — the chat resumes this saved server thread. */
-  resumeThreadId?: string;
   /** `--bridge` — the bridge URL Claude Desktop points at, shown in the banner. */
   bridgeUrl?: string;
+  /** `--model` — the gateway model this session runs on. */
+  initialModel?: string;
+  /** `--permission` — the permission chip to start on. */
+  initialMode?: PermissionMode;
+  /** An opening prompt from the command line — sent once the chat is up. */
+  initialPrompt?: string;
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, loop, authLost, resumeThreadId, bridgeUrl }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initialModel, initialMode, initialPrompt }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
   const [phase, setPhase] = useState<Phase>("loading");
   const [account, setAccount] = useState<Account | null>(null);
   // Bumped on every re-auth: keys the App so a new session starts a FRESH chat —
-  // the old transcript belonged to a dead session and its caches (models, ids) with it.
+  // the old transcript belonged to a dead session and its caches with it.
   const [epoch, setEpoch] = useState(0);
 
   // Where to go once a session exists: the theme picker on first run, else straight to chat.
@@ -65,14 +65,13 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
     return () => {
       cancelled = true;
     };
-  }, [client, afterAuth]);
+  }, [client, afterAuth, server, version]);
 
   // Session death (expired/revoked refresh) → the login gate, from anywhere.
   useEffect(() => {
     if (!authLost) return;
     authLost.handler = () => {
-      resetMcpGrant();     // the /mcp grant died with the session
-      resetHarnessHost(); // …and so did any cloud runtime provisioned for it
+      resetLoop(); // the conversations and the gateway credential died with the session
       stopMachineHost();
       setAccount(null);
       setPhase("login");
@@ -83,21 +82,19 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
   }, [authLost]);
 
   const onAuthed = useCallback(() => {
-    resetMcpGrant();     // fresh session → fresh grant on the next turn
-    resetHarnessHost(); // …and a freshly chosen host (local or cloud)
+    resetLoop(); // fresh session → a fresh credential on the next turn
     void loadAccount(client).then((a) => {
       setAccount(a);
       if (a) startMachineHost(client, server, version);
       setEpoch((e) => e + 1);
       setPhase(afterAuth());
     });
-  }, [client, afterAuth]);
+  }, [client, afterAuth, server, version]);
 
   // /login (user-initiated) → the same login gate a dead session drops to. On
   // success onAuthed bumps the epoch, so the App remounts on the fresh session.
   const onRelogin = useCallback(() => {
-    resetMcpGrant();
-    resetHarnessHost();
+    resetLoop();
     stopMachineHost();
     setAccount(null);
     setPhase("login");
@@ -126,11 +123,12 @@ export function Boot({ client, version, server, cwd, loop, authLost, resumeThrea
       version={version}
       server={server}
       cwd={cwd}
-      loop={loop}
       initialAccount={account}
       onRelogin={onRelogin}
-      {...(resumeThreadId ? { resumeThreadId } : {})}
       {...(bridgeUrl ? { bridgeUrl } : {})}
+      {...(initialModel ? { initialModel } : {})}
+      {...(initialMode ? { initialMode } : {})}
+      {...(initialPrompt && epoch === 0 ? { initialPrompt } : {})}
     />
   );
 }

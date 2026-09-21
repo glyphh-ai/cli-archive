@@ -1,31 +1,19 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * App.tsx — the TUI root. One scroll surface over a sticky bottom strip: the
- * banner is the transcript's first content (it scrolls away; the cat renders
- * only when the terminal is wide enough), and a
- * LINE-MODEL transcript filling the middle, then the status strip + composer +
- * footer pinned at the bottom.
- *
- * The transcript is a list of ITEMS flattened to styled lines every render
- * (lines.ts), so the viewport owns scrolling as exact array math: wheel/arrows
- * scroll; tool receipts are collapsed by default and ctrl+o toggles them all
- * open (retroactively, because lines regenerate from items).
- * A leading `/` runs a slash command; plain text runs ONE HARNESS TURN
- * (harness.ts) on this session's pod — the machine's local one, or the Glyphh
- * cloud runtime when there is no local harness. Tool calls land as collapsible
- * receipts, the answer streams into the `●` line, and a parked approval/ask
- * takes the keyboard until it's answered.
- * All capability comes from the SDK — nothing here talks to an API directly.
+ * App.tsx — the full-screen chat. ONE scroll surface (banner + transcript) above a
+ * pinned strip (status, a parked approval, the composer, the footer). A turn is
+ * the Glyphh loop itself (loop.ts) running in this process on the gateway: text
+ * streams live, tool calls land as collapsible receipts, and a permission ask
+ * parks the run on the strip until y/a/n answers it.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import type { Client } from "@glyphh/sdk";
-import { runHarnessTurn, type ApprovalRequest, type AskRequest } from "../harness.js";
-// Live model switches (/use) audit + layer in via the SDK override store.
-import { sessionOverrides } from "@glyphh/sdk/runtime";
-import { readPrefs, writePrefs, selectionsFor } from "../prefs.js";
+import { runLoopTurn, type ApprovalRequest } from "../loop.js";
+import { availableModels, defaultModel } from "../models.js";
+import { readPrefs, writePrefs } from "../prefs.js";
 import { CAT_ROWS } from "../banner.js";
 import { InputBar } from "./InputBar.js";
 import { Footer, type FooterSlot } from "./Footer.js";
@@ -44,7 +32,6 @@ import { headerLines,
   userLines,
   type Line,
 } from "../lines.js";
-import { ThreadSync, mintThreadId, conversationOf, THREAD_ID_RE } from "../threads.js";
 import type { ChatTurn, Item, PermissionMode, TurnStep } from "../types.js";
 
 const MODES: PermissionMode[] = ["ask", "auto", "plan", "read-only"];
@@ -60,26 +47,21 @@ const VERBS: Array<{ ing: string; past: string }> = [
   { ing: "Churning", past: "Churned" },
 ];
 
-/** Most recent turns sent to the model — bounds the wire, not the transcript. */
+/** Most recent turns handed to the loop as its seed — bounds the wire, not the transcript. */
 const HISTORY_CAP = 40;
 
-/** A tool receipt label: the pod classifies each call and sends a human title
- *  ("Run npm test"); the bare tool name is the fallback. */
+/** A tool receipt label: the loop names each call ("bash npm test"); long titles clip. */
 export function toolLabel(name: string, title?: string): string {
   const t = (title ?? "").trim();
   if (!t) return name;
   return t.length > 76 ? `${t.slice(0, 75)}…` : t;
 }
 
-/** What the strip is blocked on — the pod PARKED the run until the user
- *  answers (an `approval` or `ask` frame). */
-type Pending =
-  | { kind: "approval"; req: ApprovalRequest; answer: (allow: boolean) => void }
-  | { kind: "ask"; req: AskRequest; index: number; answers: string[]; answer: (answers: string[]) => void };
+/** What the strip is blocked on — the loop PARKED the run until the user answers. */
+type Pending = { kind: "approval"; req: ApprovalRequest; answer: (allow: boolean) => void };
 
-/** A governed connection that isn't authorized comes back as a raw tool error
- *  ("No access/refresh token", "not authorized", …). Detect it so the TUI can
- *  say what to actually do instead of surfacing the raw failure. */
+/** A governed connection that isn't authorized comes back as a raw tool error —
+ *  turn it into the one line that says what to do. */
 const CONN_AUTH_RE = /(access|refresh)[\s/]{0,3}(token|credential)|token (is )?(expired|missing|invalid|revoked)|not authori[sz]ed|unauthori[sz]ed|reconnect|connect (your |the )?[\w ]+ account/i;
 export function connectionAuthHint(toolName: string, content: string): string | null {
   if (!CONN_AUTH_RE.test(content)) return null;
@@ -92,25 +74,30 @@ export function connectionAuthHint(toolName: string, content: string): string | 
 /** Omit that distributes over a union (plain Omit collapses discriminants). */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+/** A fresh conversation id — the loop keeps its messages under it. */
+const mintChatId = (): string => `cli-${Date.now().toString(36)}-${process.pid}`;
+
 export interface AppProps {
   client: Client;
   version: string;
   server: string;
   cwd: string;
-  loop: string;
   /** The session already resolved by the boot gate — seeds the header without a flash. */
   initialAccount?: Account | null;
   /** Drop back to the interactive login screen — /login reuses the boot flow so it
    *  gets the same "press enter to open the browser" UX (and Google option). */
   onRelogin?: () => void;
-  /** Resume a server thread (`glyphh --thread <id>`): its messages seed the transcript
-   *  and new turns keep appending to the SAME thread. */
-  resumeThreadId?: string;
   /** `--bridge`: this TUI fronts the Glyphh bridge at this URL (Claude Desktop's gateway and issuer). */
   bridgeUrl?: string;
+  /** `--model`: the gateway model this session runs on (a session pick, not persisted). */
+  initialModel?: string;
+  /** `--permission`: the chip to start on (persisted like shift+tab). */
+  initialMode?: PermissionMode;
+  /** An opening prompt from the command line — sent once, on mount. */
+  initialPrompt?: string;
 }
 
-export function App({ client, version, server, cwd, loop: initialLoop, initialAccount, onRelogin, resumeThreadId, bridgeUrl }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, initialAccount, onRelogin, bridgeUrl, initialModel, initialMode, initialPrompt }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -129,12 +116,13 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   /** Lines scrolled up from the tail; 0 = follow mode. */
   const [scroll, setScroll] = useState(0);
   const [chromeH, setChromeH] = useState({ strip: 6 });
-  // Permission mode + the selected loop are per-device prefs (~/.glyphh/config.json).
-  const [mode, setMode] = useState<PermissionMode>(() => readPrefs().permissionMode ?? "ask");
-  const [loop, setLoopState] = useState(() => readPrefs().loop ?? initialLoop);
-  // Footer status: the loop's resolved model slots (empty while loading / offline).
-  const [slots, setSlots] = useState<FooterSlot[]>([]);
-  const [configVersion, setConfigVersion] = useState(0); // bump to reload after a pick
+  // The permission chip is a per-device pref (~/.glyphh/config.json); a flag wins for this launch.
+  const [mode, setMode] = useState<PermissionMode>(() => initialMode ?? readPrefs().permissionMode ?? "ask");
+  // THE MODEL: the device's persisted pick (/model), a session pick (--model, /use)
+  // over it, and the org's default underneath when neither names one.
+  const [pickedModel, setPickedModel] = useState<string | null>(() => readPrefs().model ?? null);
+  const [sessionModel, setSessionModel] = useState<string | null>(initialModel ?? null);
+  const [orgDefault, setOrgDefault] = useState<string | null>(null);
   // Setter-only: calling it re-renders the tree so render-time reads of the mutated
   // `theme` palette repaint. The value itself is never read.
   const [, setThemeVersion] = useState(0);
@@ -145,20 +133,19 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
   const turnAbort = useRef<AbortController | null>(null);
   const inputRef = useRef("");
   const stripBox = useRef<DOMElement | null>(null);
-  // The loop's resolved primary model (bare id), cached per loop.
-  const modelRef = useRef<{ loop: string | null; id: string | null }>({ loop: null, id: null });
-  // The conversation the model sees — user/assistant turns, capped for the wire.
+  // The conversation the loop was seeded with — user/assistant turns, capped for the wire.
   const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
-  /** The run is parked on an approval or a question — the strip owns the
-   *  screen until it's answered (approval: y/a/n; ask: type and Enter). */
+  // This conversation's id; /clear mints a new one so the loop starts fresh.
+  const chatId = useRef(mintChatId());
+  /** The run is parked on an approval — the strip owns the keyboard until y/a/n. */
   const [pending, setPending] = useState<Pending | null>(null);
   /** Action kinds ("edit", "command", …) the user answered "a"lways for —
    *  auto-allowed for the rest of this session. */
   const allowedKinds = useRef<Set<string>>(new Set());
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // A stable per-process id so a mid-session model switch's overrides + audit key together.
-  const sessionId = useRef<string>(`cli-${Date.now().toString(36)}-${process.pid}`);
+  const modelRef = useRef<{ picked: string | null; session: string | null }>({ picked: pickedModel, session: sessionModel });
+  modelRef.current = { picked: pickedModel, session: sessionModel };
 
   useEffect(() => {
     const onResize = () => {
@@ -194,29 +181,13 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     if (strip !== chromeH.strip) setChromeH({ strip });
   });
 
-  // The selected loop's resolved model slots → footer. One call (`loops.roles`) both the
-  // footer and the run read, so a chip can't show a model the turn won't use.
+  // The org's default model → the footer chip when nothing is picked (the same
+  // answer a turn falls back to, so the chip never shows a model a turn won't use).
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const roles = await client.loops.roles(loop, selectionsFor(loop));
-        if (cancelled) return;
-        setSlots(
-          roles.map((r) => ({
-            label: r.label || r.name,
-            // The catalog's display name for the resolved model, else its bare id.
-            model: r.modelId ? (r.choices.find((c) => c.id === r.modelId)?.name ?? r.modelId.split("::").pop() ?? r.modelId) : null,
-          })),
-        );
-      } catch {
-        if (!cancelled) setSlots([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [client, loop, configVersion]);
+    void defaultModel(client).then((m) => { if (!cancelled) setOrgDefault(m || null); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [client, account]);
 
   const push = useCallback((item: DistributiveOmit<Item, "id">): string => {
     const id = `i${++nextId.current}`;
@@ -233,79 +204,14 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     setInput(inputRef.current);
   }, []);
 
-  // ── The server thread: every chat lives in the SAME store web + desktop render
-  //    (/api/sessions/threads). Minted up front; pushed at each turn end; a server
-  //    that's away warns once and the next turn's push carries the backlog. ──
-  const syncEvents = useMemo(
-    () => ({ onOffline: (text: string) => push({ kind: "note", text }) }),
-    [push],
-  );
-  const threadSync = useRef<ThreadSync | null>(null);
-  if (threadSync.current === null) {
-    // A resumed thread starts BLOCKED (awaitSeed) — pushing before the server's
-    // copy lands would replace-set the thread down to just the new turns.
-    threadSync.current = resumeThreadId
-      ? new ThreadSync(client, resumeThreadId, syncEvents, { awaitSeed: true })
-      : new ThreadSync(client, mintThreadId(), syncEvents);
-  }
-
-  /** Seed the transcript + model history from a loaded thread's plain turns. */
-  const seedConversation = useCallback(
-    (msgs: Array<{ role: "user" | "assistant"; text: string }>) => {
-      history.current = [...msgs.map((m) => ({ role: m.role, content: m.text })), ...history.current];
-      for (const m of msgs) push(m.role === "user" ? { kind: "user", text: m.text } : { kind: "answer", text: m.text });
-    },
-    [push],
-  );
-
-  // `--thread <id>`: load the thread's messages, seed the TUI, keep appending to it.
-  useEffect(() => {
-    if (!resumeThreadId) return;
-    let cancelled = false;
-    void (async () => {
-      const sync = threadSync.current;
-      try {
-        const t = await client.sessions.thread(resumeThreadId);
-        if (cancelled || !sync) return;
-        sync.seedResumed(t);
-        seedConversation(conversationOf(t.messages));
-        push({ kind: "meta", text: `* Resumed "${t.title}" · ${t.messages.length} message${t.messages.length === 1 ? "" : "s"}` });
-      } catch (err) {
-        if (cancelled || !sync) return;
-        // Unreadable (offline / not yours / gone) — re-aim at a FRESH id so a
-        // later push can never clobber a thread we never read.
-        sync.failResume(mintThreadId());
-        push({ kind: "note", text: `Couldn't load thread ${resumeThreadId} (${(err as Error).message}) — starting a fresh chat.` });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [client, resumeThreadId, push, seedConversation]);
-
-  /** `/threads <id>` — swap this chat for a saved one, in place. */
-  const resumeThread = useCallback(
-    async (id: string): Promise<string[]> => {
-      if (!THREAD_ID_RE.test(id)) throw new Error(`bad thread id: ${id}`);
-      const t = await client.sessions.thread(id); // throws → the command surface reports it
-      history.current = [];
-      setItems([]);
-      setExpanded(false);
-      setScroll(0);
-      setLast(undefined);
-      const sync = new ThreadSync(client, id, syncEvents, { awaitSeed: true });
-      sync.seedResumed(t);
-      threadSync.current = sync;
-      const convo = conversationOf(t.messages);
-      seedConversation(convo);
-      push({ kind: "meta", text: `* Resumed "${t.title}" · ${t.messages.length} message${t.messages.length === 1 ? "" : "s"}` });
-      return [`resumed "${t.title}"`];
-    },
-    [client, push, seedConversation, syncEvents],
-  );
-
-  const setLoop = useCallback((l: string) => {
-    modelRef.current = { loop: null, id: null }; // re-resolve for the new loop
-    setLoopState(l);
-    writePrefs({ loop: l });
+  const setModel = useCallback((id: string | null, opts: { session?: boolean } = {}) => {
+    if (opts.session) {
+      setSessionModel(id);
+      return;
+    }
+    setSessionModel(null);
+    setPickedModel(id);
+    writePrefs({ model: id ?? null });
   }, []);
 
   const setTheme = useCallback((name: string) => {
@@ -313,34 +219,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     writePrefs({ theme: name });
     setThemeVersion((v) => v + 1); // repaint the whole tree in the new palette
   }, []);
-
-  // Resolve a VALID loop on mount. The default slug ("default") — or a stale
-  // saved pref — often isn't one this account actually has, so every turn would
-  // fail with a server "loop not found" and no model would ever bind. Fetch the
-  // account's loops and, if the current one isn't among them, fall back to the
-  // first available (or say there are none).
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { loops } = await client.loops.list();
-        if (cancelled) return;
-        if (!loops?.length) {
-          push({ kind: "note", text: "No loops available for this account — create one in the Glyphh platform, then restart." });
-          return;
-        }
-        if (!loops.some((l) => l.slug === loop)) {
-          const next = loops[0]!.slug;
-          setLoop(next);
-          push({ kind: "note", text: `Loop "${loop}" isn't available — switched to "${next}".` });
-        }
-      } catch {
-        /* offline / server error — leave the loop as-is; a turn will report it */
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client]);
 
   // Welcome card — mount-only by design. Greets the signed-in user (the boot gate has
   // already resolved the session) inside a bordered card at the top of the transcript.
@@ -350,9 +228,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       kind: "card",
       title: who ? `Welcome back, ${who}` : "Welcome to Glyphh",
       body: [
-        "The Glyphh agent — the same engine as the desktop, in your terminal. Answers stream live; tool calls (files, shell, the web, your platform) land as receipts.",
+        "The Glyphh loop — the same engine as the desktop, in your terminal, on any model your organization runs on the gateway. Answers stream live; tool calls (files, shell, your connected apps) land as receipts.",
         "ctrl+o expands/collapses tool output · ↑/↓ scrolls · shift+tab cycles permission mode",
-        "/help for commands · /theme to restyle · /loop to switch loops",
+        "/help for commands · /theme to restyle · /model to pick a model",
       ],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -380,41 +258,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       const abort = new AbortController();
       turnAbort.current = abort;
       try {
-        // THE DESKTOP'S PATH, exactly: the model comes from `loops.roles` (the same
-        // call the footer chip reads, so the chip and the run agree by construction),
-        // and the turn STREAMS over the gateway's Messages edge with the caller's
-        // bearer — token deltas render as they arrive. This device's per-loop picks
-        // layer in as selections; a live `/use` switch wins.
-        if (modelRef.current.loop !== loop) {
-          let effective = loop;
-          let roles;
-          try {
-            roles = await client.loops.roles(effective, {
-              ...selectionsFor(effective),
-              ...sessionOverrides(sessionId.current, effective),
-            });
-          } catch {
-            // The selected loop isn't available for this account — fall back to
-            // the first loop it actually has so a turn never dies on "loop not
-            // found", and remember the choice.
-            const list = await client.loops.list().catch(() => ({ loops: [] as Array<{ slug: string }> }));
-            const first = list.loops[0]?.slug;
-            if (!first) throw new Error("no loops are available for this account — create one in the Glyphh platform");
-            effective = first;
-            setLoop(first);
-            roles = await client.loops.roles(effective, {
-              ...selectionsFor(effective),
-              ...sessionOverrides(sessionId.current, effective),
-            });
-          }
-          const id = roles.find((r) => r.modelId)?.modelId ?? null;
-          modelRef.current = { loop: effective, id: id ? (id.includes("::") ? id.slice(id.indexOf("::") + 2) : id) : null };
-        }
-        if (!modelRef.current.id) {
+        // THE MODEL, in order: this session's pick, the device's pick, the org's
+        // default. None → say so; the loop never guesses a model.
+        const model = modelRef.current.session ?? modelRef.current.picked ?? (await defaultModel(client).catch(() => ""));
+        if (!model) {
           turn.status = "error";
-          turn.text = "No model available for this loop — pick one with /use, or switch loops with /loop.";
+          turn.text = "No model — your organization has none allowed on the gateway yet, or its lane is off. Pick one with /model once an admin allows some.";
           push({ kind: "note", text: turn.text });
         } else {
+          if (model !== orgDefault && !modelRef.current.session && !modelRef.current.picked) setOrgDefault(model);
           // CHRONOLOGICAL segments: text streams into the item at the BOTTOM of
           // the transcript; every tool receipt closes the segment, so post-tool
           // text opens a fresh ● below the receipts — work reads in order.
@@ -424,7 +276,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           // A tool's start receipt, keyed by name, so its result folds into the
           // SAME receipt (parallel calls queue per name).
           const toolItems = new Map<string, string[]>();
-          /** The transcript sink the frame stream paints through. */
           const sink = {
             delta: (t: string) => {
               text += t;
@@ -474,12 +325,11 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
             },
           };
 
-          const result = await runHarnessTurn(
+          const result = await runLoopTurn(
             {
               client,
-              server,
-              model: modelRef.current.id,
-              threadId: threadSync.current?.id ?? "",
+              model,
+              chatId: chatId.current,
               history: history.current.slice(-HISTORY_CAP),
               prompt,
               cwd: process.cwd(),
@@ -491,12 +341,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
               onToolStart: sink.toolStart,
               onToolDone: sink.toolDone,
               onProgress: sink.progress,
-              onUsd: (usd) => {
-                turn.usd = usd;
-                setLast({ ...turn });
-              },
-              // The pod PARKED the run: the strip takes the keyboard until the
-              // user answers, and `answer` resumes the pod-side loop.
+              // The loop PARKED the run: the strip takes the keyboard until the
+              // user answers, and `answer` resumes the loop.
               onApproval: (req, answer) => {
                 if (allowedKinds.current.has(req.kind)) {
                   answer(true);
@@ -504,7 +350,6 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
                 }
                 setPending({ kind: "approval", req, answer });
               },
-              onAsk: (req, answer) => setPending({ kind: "ask", req, index: 0, answers: [], answer }),
               onNote: (note) => push({ kind: "note", text: note }),
             },
           );
@@ -521,47 +366,35 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
           // follow-up ("continue") has the context.
           history.current.push({ role: "user", content: prompt });
           history.current.push({ role: "assistant", content: text || "…" });
-          // Mirror the turn into the server thread (CodeMsg-shaped, verbatim) and
-          // push the replace-set — ONE push per completed turn, never per token.
-          // `push` never throws: offline goes quiet and retries at the next turn.
-          const sync = threadSync.current;
-          if (sync) {
-            sync.append({ role: "user", text: prompt, at: startedAt });
-            sync.append({ role: "assistant", text: text || "…", at: Date.now() });
-            void sync.push();
-          }
           if (turn.status !== "error") turn.status = stopped ? "stopped" : "done";
         }
         turn.durationMs = Date.now() - startedAt;
         setLast({ ...turn });
-        // The settle line under the answer: `* Verbed for 3.1s` (+ dollars when known).
+        // The settle line under the answer: `* Verbed for 3.1s`.
         const settleVerb =
           turn.status === "error" ? "Stalled" : turn.status === "stopped" ? "Stopped" : VERBS[nextId.current % VERBS.length]!.past;
-        const parts = [
-          settleVerb,
-          `for ${(turn.durationMs / 1000).toFixed(1)}s`,
-        ];
-        if (turn.usd !== null) parts.push(`· ◈ $${turn.usd.toFixed(4)}`);
+        const parts = [settleVerb, `for ${(turn.durationMs / 1000).toFixed(1)}s`];
+        if (turn.tokensUp || turn.tokensDown) parts.push(`· ${turn.tokensUp}↑ ${turn.tokensDown}↓`);
         push({ kind: "meta", text: `* ${parts.join(" ")}` });
       } catch (err) {
-        // The pod wouldn't start / went away mid-turn: ONE honest line in the
+        // The loop threw before it could settle: ONE honest line in the
         // transcript, never a crash and never a fabricated answer.
         turn.status = "error";
-        turn.text = `Harness unavailable — ${(err as Error).message}`;
+        turn.text = `Glyphh loop unavailable — ${(err as Error).message}`;
         turn.durationMs = Date.now() - startedAt;
         push({ kind: "note", text: turn.text });
         setLast({ ...turn });
       } finally {
         turnAbort.current = null;
-        setPending(null); // a parked ask/approval dies with its run
+        setPending(null); // a parked approval dies with its run
         setBusy(false);
       }
     },
-    [client, loop, push],
+    [client, orgDefault, patchItem, push],
   );
 
-  /** Stop the in-flight turn (Esc). The agent subprocess is torn down; the partial
-   *  answer already streamed stays on screen. */
+  /** Stop the in-flight turn (Esc). The loop aborts its run; the partial answer
+   *  already streamed stays on screen. */
   const stopTurn = useCallback(() => {
     turnAbort.current?.abort();
   }, []);
@@ -572,37 +405,28 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       const ctx: CommandCtx = {
         client,
         account,
-        loop,
         version,
         server,
+        model: sessionModel ?? pickedModel,
         setAccount,
-        setLoop,
+        setModel,
         setTheme,
         clearChat: () => {
           history.current = [];
+          chatId.current = mintChatId(); // a cleared transcript is a NEW conversation
           setItems([]);
           setExpanded(false);
           setScroll(0);
           setLast(undefined);
-          // A cleared transcript is a NEW conversation — pushing the old thread's
-          // replace-set from an empty transcript would wipe it, so re-aim first.
-          threadSync.current = new ThreadSync(client, mintThreadId(), syncEvents);
         },
         quit: () => exit(),
         ...(onRelogin ? { relogin: onRelogin } : {}),
         emit: (lines) => patchItem(id, (it) => ({ ...it, result: lines }) as Item),
-        refreshConfig: () => setConfigVersion((v) => v + 1),
-        sessionId: sessionId.current,
-        invalidateModels: () => {
-          modelRef.current = { loop: null, id: null };
-        },
-        threadId: threadSync.current?.id ?? "",
-        resumeThread,
       };
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, exit, patchItem, push, loop, server, setLoop, setTheme, version, onRelogin, resumeThread, syncEvents],
+    [account, client, exit, patchItem, push, server, setModel, setTheme, version, onRelogin, sessionModel, pickedModel],
   );
 
   const submit = useCallback(() => {
@@ -618,6 +442,15 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     void runTurn(raw);
   }, [account, busy, editInput, push, runCommand, runTurn]);
 
+  // An opening prompt from the command line (the desktop's terminal card seeds
+  // one): sent once, after the welcome card, when signed in.
+  const openingSent = useRef(false);
+  useEffect(() => {
+    if (!initialPrompt || openingSent.current || !account) return;
+    openingSent.current = true;
+    void runTurn(initialPrompt);
+  }, [initialPrompt, account, runTurn]);
+
   // ── The line model — regenerated from items, so a fold toggle is retroactive
   //    (ctrl+o re-renders every receipt at the new expansion). ──
   const width = Math.max(20, cols - 4);
@@ -628,9 +461,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     out.push(...headerLines(width, CAT_ROWS, {
       version,
       name: account ? (account.name ?? account.email) : null,
-      plan: account
-        ? `${account.tier.charAt(0).toUpperCase()}${account.tier.slice(1)}${account.credits !== null ? ` · ${account.credits} credits` : ""}`
-        : null,
+      plan: account ? `${account.tier.charAt(0).toUpperCase()}${account.tier.slice(1)}` : null,
       email: account?.email ?? null,
       cwd,
       notes: bridgeUrl
@@ -663,31 +494,10 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     [lines.length, paneH],
   );
 
-  /** Answer the ask the strip is showing (Enter). A bare Enter skips the
-   *  question — the pod reads an empty answer as "proceed on best judgment". */
-  const answerAsk = useCallback(() => {
-    setPending((p) => {
-      if (p?.kind !== "ask") return p;
-      const raw = inputRef.current.trim();
-      editInput(() => "");
-      const q = p.req.questions[p.index]!;
-      const options = q.options ?? [];
-      const pick = /^[1-9]$/.test(raw) ? options[Number(raw) - 1] : undefined;
-      const value = pick ?? raw;
-      push({ kind: "meta", text: `* ${q.question} → ${value || "(skipped)"}` });
-      const answers = [...p.answers, value];
-      if (answers.length >= p.req.questions.length) {
-        p.answer(answers);
-        return null;
-      }
-      return { ...p, index: p.index + 1, answers };
-    });
-  }, [editInput, push]);
-
   useInput((ch, key) => {
     // A parked approval owns the keyboard: y allows once, a allows that ACTION
     // KIND for the session, n/esc refuses. Everything else is swallowed.
-    if (pending?.kind === "approval") {
+    if (pending) {
       if (ch === "y" || key.return) pending.answer(true);
       else if (ch === "a") {
         allowedKinds.current.add(pending.req.kind);
@@ -697,13 +507,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       setPending(null);
       return;
     }
-    // A parked ask types into the composer like any prompt; Enter submits it.
-    if (pending?.kind === "ask" && key.return) {
-      answerAsk();
-      return;
-    }
-    // Esc stops the RUNNING turn (the pod aborts its agent, keeps the partial
-    // answer). Ctrl+C still quits the whole app — Esc is the "stop this, stay here".
+    // Esc stops the RUNNING turn (the loop aborts, keeps the partial answer).
+    // Ctrl+C still quits the whole app — Esc is the "stop this, stay here".
     if (busy && key.escape) {
       stopTurn();
       return;
@@ -766,6 +571,9 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
     }
   });
 
+  // The footer's one slot: the model the next turn runs on.
+  const slots: FooterSlot[] = [{ label: "model", model: sessionModel ?? pickedModel ?? orgDefault }];
+
   return (
     <Box flexDirection="column" width={cols} height={rows}>
       {/* ONE scroll surface — the banner is its first content, so the whole
@@ -783,7 +591,7 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
       ) : null}
       <Box flexDirection="column" flexShrink={0} ref={stripBox}>
         <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
-        {pending?.kind === "approval" ? (
+        {pending ? (
           <Box flexDirection="column">
             <Text color={theme.accent} wrap="truncate-end">
               {`  ⏸ ${pending.req.title}${pending.req.detail ? `  ${pending.req.detail.split("\n")[0]}` : ""}`}
@@ -793,23 +601,8 @@ export function App({ client, version, server, cwd, loop: initialLoop, initialAc
             </Text>
           </Box>
         ) : null}
-        {pending?.kind === "ask" ? (
-          <Box flexDirection="column">
-            <Text color={theme.accent} wrap="truncate-end">
-              {`  ⏸ ${pending.req.questions[pending.index]?.question ?? ""}${
-                pending.req.questions.length > 1 ? `  (${pending.index + 1}/${pending.req.questions.length})` : ""
-              }`}
-            </Text>
-            {(pending.req.questions[pending.index]?.options ?? []).map((o, i) => (
-              <Text key={o} color={theme.faint} wrap="truncate-end">{`     ${i + 1}) ${o}`}</Text>
-            ))}
-            <Text color={theme.faint} wrap="truncate-end">
-              {"     type an answer (or its number) and press enter · empty skips"}
-            </Text>
-          </Box>
-        ) : null}
         <InputBar width={cols} value={input} busy={busy} />
-        <Footer width={cols} permissionMode={mode} loop={loop} slots={slots} />
+        <Footer width={cols} permissionMode={mode} loop="glyphh" slots={slots} />
       </Box>
     </Box>
   );

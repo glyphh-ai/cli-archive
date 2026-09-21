@@ -1,33 +1,29 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * commands.ts — the TUI's slash commands. A leading `/` routes here instead of to the
- * loop. Each command runs against the SDK (never its own API) and returns the lines to
- * show as a `└ …` result under the typed command. Kept small; the full `glyphh` CLI
- * remains the exhaustive surface — these are the in-chat conveniences.
- *
- * Model picks mirror the desktop composer: a loop declares model SLOTS, and a pick binds
- * one to a model on THIS device (`setSelection`). Resolution — pick → loop default →
- * platform default → first allowed — happens server-side (`loops.roles`), so what the
- * footer shows and what a turn runs cannot drift apart.
+ * commands.ts — the slash commands. Each is a small, testable function over a
+ * CommandCtx the App supplies: sign in/out, the model a turn runs on (the org's
+ * gateway list), the theme, the transcript. The loop itself has no command —
+ * this TUI IS the Glyphh loop; shift+tab is its permission chip.
  */
 
 import type { Client } from "@glyphh/sdk";
-import { detectHardware, recommendModel, LOCAL_MODELS, ensureLocalModel } from "@glyphh/sdk/models";
-import { switchModel } from "@glyphh/sdk/runtime";
 import { loadAccount, type Account } from "./glyphh.js";
+import { availableModels, type ModelChoice } from "./models.js";
 import { openBrowser } from "./open-browser.js";
-import { readPrefs, selectionsFor, setSelection } from "./prefs.js";
+import { readPrefs } from "./prefs.js";
 import { THEMES, DEFAULT_THEME } from "./theme.js";
 
 export interface CommandCtx {
   client: Client;
   account: Account | null;
-  loop: string;
   version: string;
   server: string;
+  /** The model turns run on; null = the org's default, resolved per turn. */
+  model: string | null;
   setAccount: (a: Account | null) => void;
-  setLoop: (l: string) => void;
+  /** Pick the model: persisted on this device, or for THIS session only. */
+  setModel: (id: string | null, opts?: { session?: boolean }) => void;
   /** Apply + persist a theme by name (repaints the whole tree). */
   setTheme: (name: string) => void;
   clearChat: () => void;
@@ -37,16 +33,6 @@ export interface CommandCtx {
   relogin?: () => void;
   /** Update the running command's `└ …` lines mid-flight (e.g. the login code + URL). */
   emit: (lines: string[]) => void;
-  /** Reload the footer's model slots (after a selection change). */
-  refreshConfig?: () => void;
-  /** The per-process session id — anchors a mid-session model switch's overrides + audit. */
-  sessionId: string;
-  /** Drop the cached model registry so the next turn re-resolves (after a selection switch). */
-  invalidateModels?: () => void;
-  /** THIS chat's server thread id (the store web + desktop also render). */
-  threadId: string;
-  /** Swap the chat for a saved thread, in place (loads messages, reseeds the TUI). */
-  resumeThread: (id: string) => Promise<string[]>;
 }
 
 export interface SlashCommand {
@@ -61,18 +47,16 @@ function planLabel(tier: string): string {
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 
-/** Strip a catalog id's `provider::` prefix down to the bare model id for display. */
-function bareId(modelId: string): string {
-  return modelId.split("::").pop() ?? modelId;
-}
-
-/** Compact "how long ago" for the threads list (epoch ms → `3h ago`). EXPORTED for tests. */
-export function agoLabel(atMs: number, now: number = Date.now()): string {
-  const s = Math.max(0, (now - atMs) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+/** The model list as command output, the current pick marked. */
+export function modelLines(models: ModelChoice[], current: string | null): string[] {
+  if (!models.length) return ["no models are available to you on the gateway — an org admin allows them under Router Settings"];
+  const lines = ["models your organization runs on the gateway:"];
+  for (const m of models) {
+    const mark = m.id === current ? "  ← current" : "";
+    lines.push(`  ${m.id === m.name ? m.id : `${m.id}  (${m.name})`}${mark}`);
+  }
+  lines.push(current ? "pick:  /model <id>    org default:  /model default" : "pick:  /model <id>    (running on the org's default)");
+  return lines;
 }
 
 const COMMANDS: SlashCommand[] = [
@@ -123,157 +107,47 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "status",
     aliases: ["whoami"],
-    summary: "show the signed-in account, plan, and server",
+    summary: "show the signed-in account, plan, model and server",
     async run(ctx) {
-      if (!ctx.account) return ["Not signed in · run /login <email>"];
+      if (!ctx.account) return ["Not signed in · run /login"];
       const a = ctx.account;
       return [
         `signed in as ${a.email}`,
-        `plan ${planLabel(a.tier)}${a.credits !== null ? ` · ${a.credits} credits` : ""}`,
-        `loop ${ctx.loop}  ·  ${ctx.server.replace(/^https?:\/\//, "")}`,
+        `plan ${planLabel(a.tier)}`,
+        `model ${ctx.model ?? "the org's default"}  ·  ${ctx.server.replace(/^https?:\/\//, "")}`,
       ];
     },
   },
   {
-    name: "loop",
-    aliases: ["loops"],
-    summary: "show or switch the selected loop",
-    usage: "/loop [slug]",
-    async run(ctx, args) {
-      const slug = args[0];
-      if (!slug) {
-        const { loops } = await ctx.client.loops.list().catch(() => ({ loops: [] }));
-        const lines = [`current loop: ${ctx.loop}`];
-        if (loops.length) {
-          lines.push("available:");
-          for (const l of loops) lines.push(`  ${l.slug}${l.slug === ctx.loop ? "  ← selected" : ""}  — ${l.name}`);
-          lines.push("switch:  /loop <slug>");
-        }
-        return lines;
-      }
-      ctx.setLoop(slug);
-      return [`loop set to ${slug}`];
-    },
-  },
-  {
-    name: "configure",
-    aliases: ["config", "models"],
-    summary: "show the selected loop's model slots + how each resolves",
-    async run(ctx) {
-      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => null);
-      if (!roles) return [`loop "${ctx.loop}" is not in the library`];
-      const lines = [`${ctx.loop} — ${roles.length} slot(s):`];
-      for (const r of roles) {
-        const model = r.modelId ? `${bareId(r.modelId)} (${r.source})` : "— none —";
-        lines.push(`  ${r.name}: ${model}${r.description ? `  · ${r.description}` : ""}`);
-      }
-      lines.push("pick a model:  /model <modelId>[:local]    slot:  /bind <slot>=<modelId>");
-      return lines;
-    },
-  },
-  {
-    name: "bind",
-    summary: "pick a model for a loop slot on this device: /bind <slot>=<modelId> …",
-    async run(ctx, args) {
-      if (args.length === 0) return ["usage: /bind <slot>=<modelId> …  (this device's pick; resolved server-side)"];
-      const picks = args.map((p) => {
-        const [role, modelId] = p.split("=");
-        if (!role || !modelId) throw new Error(`bad pair: ${p}`);
-        return { role, modelId };
-      });
-      for (const { role, modelId } of picks) setSelection(ctx.loop, role, modelId);
-      ctx.invalidateModels?.(); // next turn re-resolves with the new picks
-      ctx.refreshConfig?.();
-      return ["selection saved", ...picks.map((p) => `  ${p.role} → ${bareId(p.modelId)}`)];
-    },
-  },
-  {
     name: "model",
-    summary: "list models, or pick the loop's primary model: /model <modelId>[:local]",
+    aliases: ["models"],
+    summary: "list the gateway's models, or pick one for this device: /model <id> (or default)",
+    usage: "/model [id|default]",
     async run(ctx, args) {
-      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => []);
-      const primary = roles[0]?.name ?? "default";
-      if (args.length === 0) {
-        const models = await ctx.client.catalog.models();
-        const lines = [`available models (fills "${primary}"):`];
-        for (const m of models) lines.push(`  ${m.id}  (${m.kind === "open_weight" ? "local" : "hosted"})`);
-        lines.push("pick:  /model <modelId>        local:  /model <modelId>:local");
-        return lines;
+      const models = await availableModels(ctx.client);
+      const pick = args[0];
+      if (!pick) return modelLines(models, ctx.model);
+      if (pick === "default") {
+        ctx.setModel(null);
+        return ["model → the org's default"];
       }
-      const raw = args[0]!;
-      const local = raw.endsWith(":local");
-      const modelId = local ? raw.slice(0, -6) : raw;
-      setSelection(ctx.loop, primary, modelId);
-      ctx.invalidateModels?.();
-      ctx.refreshConfig?.();
-      return [`${primary} → ${bareId(modelId)}${local ? " (local)" : ""}`];
+      if (models.length && !models.some((m) => m.id === pick)) return [`${pick} is not a model your organization runs on the gateway — /model lists them`];
+      ctx.setModel(pick);
+      return [`model → ${pick}`];
     },
   },
   {
     name: "use",
     aliases: ["switch"],
-    summary: "switch a model for THIS session only (transient, audited): /use <modelId> [slot]",
+    summary: "switch the model for THIS session only: /use <id>",
+    usage: "/use <id>",
     async run(ctx, args) {
-      if (args.length === 0) return ["usage: /use <modelId> [slot]  — switch a model for this session (audited; /model persists it)"];
-      const to = args[0]!;
-      const roles = await ctx.client.loops.roles(ctx.loop, selectionsFor(ctx.loop)).catch(() => []);
-      const role = args[1] ?? roles[0]?.name ?? "default";
-      // The slot's current resolved model → the from→to audit trail.
-      const from = roles.find((r) => r.name === role)?.modelId;
-      await switchModel(ctx.client, {
-        sessionId: ctx.sessionId,
-        rotorSlug: ctx.loop,
-        role,
-        to,
-        ...(from ? { from } : {}),
-        surface: "cli",
-      });
-      ctx.invalidateModels?.(); // next turn re-resolves with the override
-      return [`switched ${role} → ${to} for this session (audited)`, from ? `  was ${bareId(from)} · durable pick unchanged (/model persists)` : "  durable pick unchanged (/model persists)"];
-    },
-  },
-  {
-    name: "install",
-    summary: "install a local model (opt-in): /install [modelId]",
-    async run(ctx, args) {
-      const hw = detectHardware();
-      if (args.length === 0) {
-        const rec = recommendModel(hw);
-        const lines = [
-          `this machine: ${hw.totalRamGB}GB RAM${hw.appleSilicon ? " · Apple Silicon" : ""}`,
-          `recommended: ${rec.id} (${rec.name})`,
-          "installable:",
-          ...LOCAL_MODELS.map((m) => `  ${m.id}  ${m.name}  (needs ${m.minRamGB}GB)`),
-          "install:  /install <id>    then use it:  /model <id>:local",
-        ];
-        return lines;
-      }
-      const id = args[0]!;
-      ctx.emit([`installing ${id} — downloading weights, this can take a while…`]);
-      const server = await ensureLocalModel(id, {
-        onProgress: (phase, r) => ctx.emit([`${phase} ${Math.round(r * 100)}%`]),
-      });
-      return [`installed ${id}`, `serving at ${server.url}`, `use it:  /model ${id}:local`];
-    },
-  },
-  {
-    name: "threads",
-    aliases: ["resume", "sessions"],
-    summary: "list your saved chats, or resume one: /threads <id>",
-    usage: "/threads [id]",
-    async run(ctx, args) {
-      const id = args[0];
-      if (id) return ctx.resumeThread(id);
-      const threads = await ctx.client.sessions.threads();
-      if (!threads.length) return ["no saved chats yet — finish a turn and this chat lands in your threads"];
-      const lines = ["saved chats (newest first):"];
-      for (const t of threads.slice(0, 15)) {
-        const mark = t.id === ctx.threadId ? "  ← this chat" : "";
-        lines.push(`  ${t.id}  ${agoLabel(t.updatedAt)}  ${t.title} · ${t.messageCount} msg${mark}`);
-      }
-      if (threads.length > 15) lines.push(`  … ${threads.length - 15} more (glyphh threads list)`);
-      lines.push("resume:  /threads <id>    (or launch with:  glyphh --thread <id>)");
-      return lines;
+      const pick = args[0];
+      if (!pick) return ["usage: /use <id>  — switch the model for this session (/model persists it)"];
+      const models = await availableModels(ctx.client);
+      if (models.length && !models.some((m) => m.id === pick)) return [`${pick} is not a model your organization runs on the gateway — /model lists them`];
+      ctx.setModel(pick, { session: true });
+      return [`switched to ${pick} for this session · durable pick unchanged (/model persists)`];
     },
   },
   {
@@ -298,7 +172,7 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: "clear",
-    summary: "clear the transcript",
+    summary: "clear the transcript and start a new conversation",
     run(ctx) {
       ctx.clearChat();
       return [];
@@ -333,10 +207,10 @@ const COMMANDS: SlashCommand[] = [
 
 /** The "What's new" panel copy (also shown by `/release-notes`). */
 export const RELEASE_NOTES: string[] = [
-  "Chats save to your Glyphh threads — the same",
-  "history web + desktop show. /threads lists,",
-  "/threads <id> resumes (or glyphh --thread <id>)",
-  "Per-turn credits + duration on every answer",
+  "The Glyphh loop runs right here, on any",
+  "model your org serves on the gateway.",
+  "/model picks one; shift+tab sets permission",
+  "Files + shell work in this folder",
 ];
 
 const BY_NAME = new Map<string, SlashCommand>();

@@ -1,11 +1,9 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * prefs.ts — per-device CLIENT preferences, in `~/.glyphh/config.json` (shared with the
- * CLI profile's `server`). These are interaction defaults that don't belong on the server:
- * the permission mode, the last-selected LOOP, and this device's per-loop model picks.
- * Governance — which models a caller MAY choose — stays on the control plane; a selection
- * here only says which allowed model fills a slot, resolved server-side by `loops.roles`.
+ * prefs.ts — this device's TUI preferences (~/.glyphh/config.json, 0600): the
+ * permission chip, the picked model, the theme. The `server` key belongs to
+ * the CLI profile and is preserved, never owned here.
  */
 
 import { homedir } from "node:os";
@@ -20,63 +18,38 @@ function file(): string {
   return join(home(), "config.json");
 }
 
-/** This device's model picks, per loop: `{ [loopSlug]: { [role]: modelId } }`. Mirrors the
- *  desktop composer — a "coder" pick in one loop must not rebind another loop's "coder". */
-export type LoopSelections = Record<string, Record<string, string>>;
-
 export interface Prefs {
-  /** The CLI profile's server (written by the `glyphh` CLI) — preserved, not owned here. */
+  /** The CLI profile's server — preserved, not owned here. */
   server?: string;
   permissionMode?: PermissionMode;
-  /** The selected loop's slug. */
-  loop?: string;
-  loopSelections?: LoopSelections;
+  /** The model turns run on (a gateway model name). Absent = the org's default. */
+  model?: string;
   /** The chosen theme's name (see theme.ts). Absent = never picked → the picker runs. */
   theme?: string;
 }
 
-/** Raw on-disk shape, including the pre-rename `rotor` key we migrate on read. */
-interface StoredPrefs extends Prefs {
-  /** @deprecated superseded by `loop` — read once, then rewritten as `loop`. */
-  rotor?: string;
-}
-
 export function readPrefs(): Prefs {
   try {
-    const raw = JSON.parse(readFileSync(file(), "utf8")) as StoredPrefs;
-    // Migrate the pre-rename key: an older `rotor` becomes `loop` unless `loop` already won.
-    if (raw.loop === undefined && raw.rotor !== undefined) raw.loop = raw.rotor;
-    delete raw.rotor;
-    return raw;
+    return JSON.parse(readFileSync(file(), "utf8")) as Prefs;
   } catch {
     return {};
   }
 }
 
+/** A patch: a value sets the key, null removes it (back to the default). */
+export type PrefsPatch = { [K in keyof Prefs]?: Prefs[K] | null };
+
 /** Merge + persist (0600). Best-effort — a read-only home never breaks the TUI. */
-export function writePrefs(patch: Partial<Prefs>): void {
+export function writePrefs(patch: PrefsPatch): void {
   try {
-    const next = { ...readPrefs(), ...patch };
+    const next: Record<string, unknown> = { ...readPrefs() };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete next[k];
+      else if (v !== undefined) next[k] = v;
+    }
     mkdirSync(home(), { recursive: true });
     writeFileSync(file(), JSON.stringify(next, null, 2), { mode: 0o600 });
   } catch {
     /* best-effort */
   }
-}
-
-/** This device's stored picks for one loop (empty when none set). */
-export function selectionsFor(loop: string): Record<string, string> {
-  return readPrefs().loopSelections?.[loop] ?? {};
-}
-
-/**
- * Bind a loop slot to a model on this device. A null model CLEARS the pick, handing the
- * slot back to the loop's own default — the CLI equivalent of the picker's "Auto".
- */
-export function setSelection(loop: string, role: string, modelId: string | null): void {
-  const all = readPrefs().loopSelections ?? {};
-  const forLoop = { ...(all[loop] ?? {}) };
-  if (modelId) forLoop[role] = modelId;
-  else delete forLoop[role];
-  writePrefs({ loopSelections: { ...all, [loop]: forLoop } });
 }

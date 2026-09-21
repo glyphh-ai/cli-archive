@@ -2,29 +2,30 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * glyphh.ts — the TUI's single seam onto @glyphh/sdk. Builds a client bound to the
- * SAME on-disk session the `glyphh` CLI uses (~/.glyphh/session.json), loads who-am-I,
- * and opens a loop session to stream turns. Every capability the TUI shows is an SDK
- * call — the TUI is a thin view, never its own API client.
+ * CLI's OWN on-disk session (~/.glyphh/session.json — the desktop keeps its own;
+ * a 15-minute access token with a rotating refresh is not something two
+ * processes can share), loads who-am-I, and hands the client to the loop.
+ * Every capability the TUI shows is an SDK call — the TUI is a thin view.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { createClient, staticTokenProvider, type Client, type Identity } from "@glyphh/sdk";
+import { createClient, type Client, type Identity } from "@glyphh/sdk";
 import { FileTokenStore } from "@glyphh/sdk/storage/file";
 
 export interface Account {
   email: string;
   name: string | null;
   tier: string;
-  credits: number | null;
 }
 
 function glyphhHome(): string {
   return process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh");
 }
 
-/** Server URL: env override, else the CLI profile, else the public control plane. */
+/** Server URL: env override (the desktop sets it when it launches us), else
+ *  the CLI profile, else the public control plane. */
 export function serverUrl(): string {
   if (process.env.GLYPHH_SERVER_URL) return process.env.GLYPHH_SERVER_URL;
   try {
@@ -46,7 +47,7 @@ export function makeClient(opts: { onSignedOut?: () => void } = {}): Client {
   });
 }
 
-/** Load the signed-in account (identity + credit balance), or null if signed out. */
+/** Load the signed-in account, or null if signed out. */
 export async function loadAccount(client: Client): Promise<Account | null> {
   let identity: Identity;
   try {
@@ -54,13 +55,5 @@ export async function loadAccount(client: Client): Promise<Account | null> {
   } catch {
     return null;
   }
-  let credits: number | null = null;
-  try {
-    credits = (await client.billing.balance()).credits;
-  } catch {
-    /* balance is best-effort chrome */
-  }
-  return { email: identity.email, name: identity.name, tier: identity.tier, credits };
+  return { email: identity.email, name: identity.name, tier: identity.tier };
 }
-
-export { staticTokenProvider };
