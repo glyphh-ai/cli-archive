@@ -1,9 +1,10 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * InputBar.tsx — the composer. A single-line editor with a REAL cursor: the
- * text before it, an inverted cell at it, the text after. While a turn runs it
- * names the key that stops it.
+ * InputBar.tsx — the composer, one line between two rules, the way the other
+ * CLIs draw it: the prompt glyph, the text with a REAL cursor (the text before
+ * it, an inverted cell at it, the text after), and a faint hint at the right
+ * while the line is empty. While a turn runs it names the key that stops it.
  */
 
 import React from "react";
@@ -21,29 +22,26 @@ export interface InputBarProps {
 }
 
 export function InputBar({ width, value, cursor, busy, hint }: InputBarProps): React.ReactElement {
-  const hasText = value.length > 0;
   const chars = [...value];
+  const hasText = chars.length > 0;
   const at = Math.max(0, Math.min(cursor ?? chars.length, chars.length));
   const before = chars.slice(0, at).join("");
   const under = chars[at] ?? " ";
   const after = chars.slice(at + 1).join("");
-  // While busy the button is the STOP control: it names the key (Esc) because a
-  // terminal button isn't clickable, and turns red so it reads as "interrupt".
-  const accent = busy ? "red" : hasText ? theme.accent : theme.muted;
-  const button = busy ? " Esc ✕ stop " : " Send ⏎ ";
-
   return (
     <Box
       width={width}
       borderStyle="single"
-      borderColor={busy ? "red" : hasText ? theme.accent : theme.muted}
+      borderColor={busy ? "red" : hasText ? theme.accent : theme.faint}
+      borderLeft={false}
+      borderRight={false}
       paddingX={1}
       justifyContent="space-between"
     >
       <Box>
-        <Text color={theme.accent}>{"› "}</Text>
+        <Text color={busy ? "red" : theme.accent}>{"❯ "}</Text>
         {busy ? (
-          <Text color={theme.faint}>{hint ?? "working… press Esc to stop"}</Text>
+          <Text color={theme.faint}>{hint ?? "working… esc to stop"}</Text>
         ) : hasText ? (
           <Text>
             <Text color={theme.text}>{before}</Text>
@@ -57,9 +55,7 @@ export function InputBar({ width, value, cursor, busy, hint }: InputBarProps): R
           </Text>
         )}
       </Box>
-      <Text backgroundColor={accent} color={theme.text}>
-        {button}
-      </Text>
+      {!busy && !hasText ? <Text color={theme.faint}>{"? for shortcuts"}</Text> : null}
     </Box>
   );
 }

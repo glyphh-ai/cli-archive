@@ -37,13 +37,11 @@ export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
       </Text>
     );
   }
-  if ((line.style === "user" || line.style === "command") && line.text.startsWith("▌")) {
+  if ((line.style === "user" || line.style === "command") && line.text.startsWith("❯")) {
     return (
       <Text wrap="truncate-end">
-        <Text color={theme.accent} bold>
-          ▌{" "}
-        </Text>
-        <Text color={line.style === "command" ? theme.accent : theme.text}>{line.text.slice(2)}</Text>
+        <Text color={theme.faint}>{"❯ "}</Text>
+        <Text color={line.style === "command" ? theme.accent : theme.text} bold={line.style === "user"}>{line.text.slice(2)}</Text>
       </Text>
     );
   }

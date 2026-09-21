@@ -12,9 +12,13 @@ export interface Flags {
   permission?: PermissionMode;
   bridgeUrl?: string;
   prompt?: string;
+  /** `--resume <chatId>`: open that chat from the shared store. */
+  resume?: string;
+  /** `--continue`: open the most recent Glyphh-loop chat. */
+  continueLast?: boolean;
 }
 
-export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--bridge] [prompt…]";
+export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--resume <chatId> | --continue] [--bridge] [prompt…]";
 
 /** The permission words every Glyphh surface uses → this TUI's chip. */
 export function permissionFlag(raw: string): PermissionMode | undefined {
@@ -32,6 +36,9 @@ export function parseFlags(argv: string[]): Flags {
     if (a === "--permission" || a === "--permission-mode") { const p = permissionFlag(argv[++i] ?? ""); if (p) out.permission = p; continue; }
     if (a.startsWith("--permission=") || a.startsWith("--permission-mode=")) { const p = permissionFlag(a.slice(a.indexOf("=") + 1)); if (p) out.permission = p; continue; }
     if (a === "--dangerously-skip-permissions") { out.permission = "bypass"; continue; }
+    if (a === "--resume" || a === "-r") { const v = argv[++i]; if (v && /^[A-Za-z0-9_-]{1,64}$/.test(v)) out.resume = v; continue; }
+    if (a.startsWith("--resume=")) { const v = a.slice(9); if (/^[A-Za-z0-9_-]{1,64}$/.test(v)) out.resume = v; continue; }
+    if (a === "--continue" || a === "-c") { out.continueLast = true; continue; }
     if (a === "--bridge") { out.bridgeUrl = process.env.GLYPHH_BRIDGE_URL ?? "http://127.0.0.1:4747"; continue; }
     if (a.startsWith("--")) {
       process.stderr.write(`glyphh: unknown flag ${a}\n${USAGE}\n`);

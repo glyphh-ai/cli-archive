@@ -15,6 +15,7 @@ import { createClient, type Client, type Identity } from "@glyphh/sdk";
 import { FileTokenStore } from "@glyphh/sdk/storage/file";
 
 export interface Account {
+  userId: string;
   email: string;
   name: string | null;
   tier: string;
@@ -55,5 +56,5 @@ export async function loadAccount(client: Client): Promise<Account | null> {
   } catch {
     return null;
   }
-  return { email: identity.email, name: identity.name, tier: identity.tier };
+  return { userId: identity.userId, email: identity.email, name: identity.name, tier: identity.tier };
 }

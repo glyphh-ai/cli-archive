@@ -53,16 +53,16 @@ export function wrap(text: string, width: number, indent: string): string[] {
   return out;
 }
 
-/** Typed input leads with the Glyphh purple bar `▌`. */
+/** Typed input leads with the prompt glyph `❯`, the way the other CLIs echo it. */
 export function userLines(text: string, width: number): Line[] {
-  const wrapped = wrap(`▌ ${text}`, width, "  ");
+  const wrapped = wrap(`❯ ${text}`, width, "  ");
   return [{ text: "", style: "blank" }, ...wrapped.map((t) => ({ text: t, style: "user" as const }))];
 }
 
 /** A slash command + its `└ …` result lines (mutable mid-flight via patch). */
 export function commandLines(text: string, result: string[] | undefined, width: number): Line[] {
   const out: Line[] = [{ text: "", style: "blank" }];
-  for (const t of wrap(`▌ ${text}`, width, "  ")) out.push({ text: t, style: "command" });
+  for (const t of wrap(`❯ ${text}`, width, "  ")) out.push({ text: t, style: "command" });
   const results = (result ?? []).filter(Boolean);
   results.forEach((line, i) => {
     for (const w of wrap((i === 0 ? "  └ " : "    ") + line, width, "      ")) {
@@ -78,11 +78,6 @@ export function answerLines(text: string, width: number): Line[] {
     { text: "", style: "blank" },
     ...wrapped.map((t) => ({ text: `  ${t}`, style: "answer" as const })),
   ];
-}
-
-/** The settle line under a finished turn: `* Verbed for 3.1s · ◈ $0.0120`. */
-export function metaLines(text: string): Line[] {
-  return [{ text: `  ${text}`, style: "meta" }];
 }
 
 export function sectionLines(step: TurnStep, expanded: boolean): Line[] {
@@ -106,13 +101,10 @@ export function noteLines(text: string): Line[] {
   return [{ text: `  ${text}`, style: "note" }];
 }
 
-/** A boxed card: `╭─ Title ─…─╮` edge, body rows, closing edge. The title row
- *  carries the accent; body rows wrap to the card's inner width. */
-
 // ── The launch banner as SCROLLABLE lines ────────────────────────────────────
-// The logo (banner.ts) leads, then ONE identity card: who, where, what runs the
-// next turn, and what is new. As transcript lines it scrolls away naturally,
-// and the logo renders only at a width that holds it intact.
+// ONE card, two panels (the shape every agent CLI opens with): the welcome,
+// the mascot, the model and folder on the left; tips and what's new on the
+// right. Narrow terminals stack the two. As transcript lines it scrolls away.
 
 export interface HeaderInfo {
   version: string;
@@ -124,59 +116,58 @@ export interface HeaderInfo {
   model: string | null;
   /** The control plane, host only. */
   server: string;
+  /** Tips for getting started (left blank = none). */
+  tips: string[];
+  /** What's new. */
   notes: string[];
 }
 
 /** Box + quadrant glyphs are single-width, so code-point length IS columns. */
 const clen = (s: string): number => [...s].length;
 const padCell = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - clen(s)));
+const centerCell = (s: string, w: number): string => {
+  const pad = Math.max(0, w - clen(s));
+  const left = Math.floor(pad / 2);
+  return " ".repeat(left) + s + " ".repeat(pad - left);
+};
 const clipEnd = (s: string, w: number): string =>
   clen(s) <= w ? s : [...s].slice(0, Math.max(0, w - 1)).join("") + "…";
 const clipStart = (s: string, w: number): string =>
   clen(s) <= w ? s : "…" + [...s].slice(clen(s) - (w - 1)).join("");
 
-export function headerLines(width: number, logo: readonly string[], info: HeaderInfo): Line[] {
-  const w = Math.max(30, Math.min(width, 100));
+/** Two panels need this much; below it the card stacks. */
+const TWO_PANEL_MIN = 78;
+
+export function headerLines(width: number, mark: readonly string[], info: HeaderInfo): Line[] {
+  const w = Math.max(30, width);
   const inner = w - 2;
-  const out: Line[] = [];
-  if (logo.length) {
-    out.push({ text: "", style: "blank" });
-    for (const row of logo) out.push({ text: `  ${row}`, style: "logo" });
-    out.push({ text: "", style: "blank" });
-  }
   const label = `Glyphh ${info.version}`;
-  out.push({
+  const out: Line[] = [{ text: "", style: "blank" }, {
     text: `┌─ ${clipEnd(label, inner - 5)} ${"─".repeat(Math.max(0, inner - clen(label) - 5))}─┐`,
     style: "cardTitle",
-  });
-  const row = (text: string): void => { out.push({ text: `│${padCell(clipEnd(text, inner), inner)}│`, style: "cardBody" }); };
-  const who = info.name
-    ? [` ${[info.name, info.plan ?? "", info.email ?? ""].filter(Boolean).join(" · ")}`]
-    : [" not signed in · /login to sign in"];
-  for (const t of who) row(t);
-  row(` ${clipStart(info.cwd, inner - 2)}`);
-  row(` model ${info.model ?? "the org's default"} · ${info.server}`);
-  if (info.notes.length) {
+  }];
+  const welcome = info.name ? "Welcome back!" : "Welcome to Glyphh";
+  const who = info.name ? `${info.name}${info.plan ? ` · ${info.plan}` : ""}` : "not signed in · /login";
+  const modelLine = `${info.model ?? "the org's default"}${info.server ? ` · ${info.server}` : ""}`;
+  const left: string[] = [welcome, "", ...mark, "", modelLine, who, info.cwd];
+  const right: string[] = [];
+  if (info.tips.length) right.push("Tips for getting started", ...info.tips, "");
+  right.push("What's new", ...info.notes, "/version for more");
+
+  if (w >= TWO_PANEL_MIN) {
+    const leftW = Math.max(30, Math.min(44, Math.floor(inner * 0.4)));
+    const rightW = inner - leftW - 1;
+    const l = left.map((t) => centerCell(clipEnd(t === info.cwd ? clipStart(t, leftW - 2) : t, leftW - 2), leftW));
+    const r = right.map((t) => ` ${clipEnd(t, rightW - 2)}`);
+    const n = Math.max(l.length, r.length);
+    for (let i = 0; i < n; i++) out.push({ text: `│${padCell(l[i] ?? "", leftW)}│${padCell(r[i] ?? "", rightW)}│`, style: "cardBody" });
+  } else {
+    const row = (t: string): void => { out.push({ text: `│${padCell(clipEnd(t, inner), inner)}│`, style: "cardBody" }); };
+    for (const t of left) row(t === info.cwd ? ` ${clipStart(t, inner - 2)}` : ` ${t}`);
     row("");
-    row(" What's new");
-    for (const t of info.notes) row(`   ${t}`);
+    for (const t of right) row(` ${t}`);
   }
-  row("");
-  row(" /help for commands · ? shortcuts · shift+tab permissions");
   out.push({ text: `└${"─".repeat(inner)}┘`, style: "cardEdge" });
   out.push({ text: "", style: "blank" });
   return out;
-}
-
-export function cardLines(title: string, body: string[], width: number): Line[] {
-  const inner = Math.max(20, Math.min(width, 100)) - 4;
-  const top = `╭─ ${title} ${"─".repeat(Math.max(0, inner - title.length - 2))}╮`;
-  const lines: Line[] = [{ text: "", style: "blank" }, { text: top, style: "cardTitle" }];
-  for (const row of body) {
-    for (const w of wrap(row, inner, "  ")) {
-      lines.push({ text: `│ ${w}${" ".repeat(Math.max(0, inner - [...w].length + 1))}│`, style: "cardBody" });
-    }
-  }
-  lines.push({ text: `╰${"─".repeat(inner + 2)}╯`, style: "cardEdge" });
-  return lines;
 }

@@ -19,13 +19,14 @@ import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/th
 import { openBrowser } from "../src/open-browser.js";
 import { toolLabel, connectionAuthHint, deleteWordBefore } from "../src/components/App.js";
 import { LOGO_MARK, LOGO_NARROW, logoRows } from "../src/banner.js";
+import { Picker } from "../src/components/Picker.js";
 import { SlashMenu } from "../src/components/SlashMenu.js";
 import { matchCommands, permissionLines } from "../src/commands.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
 
 describe("TUI layout", () => {
-  it("banner lines: the block logo when it fits, then one identity card with version, account, folder, model and What's new", () => {
+  it("banner: one card, two panels — welcome + mascot + model + folder left, tips + what's new right; stacked when narrow", () => {
     const info = {
       version: "v1.0.0",
       name: "Chris",
@@ -34,37 +35,62 @@ describe("TUI layout", () => {
       cwd: "~/development/yo",
       model: "claude-sonnet-5",
       server: "api.glyphh.ai",
+      tips: ["Ask in plain words"],
       notes: ["Full-screen chat TUI", "Slash commands: /login /status"],
     };
-    const wide = headerLines(120, logoRows(120), info).map((l) => l.text).join("\n");
+    const wide = headerLines(120, LOGO_MARK, info).map((l) => l.text).join("\n");
     expect(wide).toContain("Glyphh v1.0.0"); // version in the border
-    expect(wide).toContain("┌─"); // the hand-drawn outline
-    expect(wide).toContain(LOGO_NARROW[3]!.trim().slice(0, 4)); // the whole mark rendered (never the 14-row cut)
-    expect(wide).toContain("Chris · Pro · chris@glyphh.ai");
+    expect(wide).toContain("Welcome back!");
+    expect(wide).toContain(LOGO_MARK[1]!.trim()); // the mascot
+    expect(wide).toContain("Chris · Pro");
     expect(wide).toContain("~/development/yo");
-    expect(wide).toContain("model claude-sonnet-5 · api.glyphh.ai");
+    expect(wide).toContain("claude-sonnet-5 · api.glyphh.ai");
+    expect(wide).toContain("Tips for getting started");
     expect(wide).toContain("What's new");
     expect(wide).toContain("Full-screen chat TUI");
-    // A medium terminal gets the whole mark; a narrow one the mascot alone —
-    // block art cannot downscale, so cropping beats mangling.
+    // Two panels: a tip sits on the same row as the welcome.
+    const welcomeRow = headerLines(120, LOGO_MARK, info).find((l) => l.text.includes("Welcome back!"))!.text;
+    expect(welcomeRow).toContain("Tips for getting started");
+    // Narrow: stacked, every line fits.
+    const narrowLines = headerLines(48, LOGO_MARK, info);
+    const narrow = narrowLines.map((l) => l.text).join("\n");
+    expect(narrow).toContain("Welcome back!");
+    expect(narrow).toContain("What's new");
+    for (const l of narrowLines) expect([...l.text].length).toBeLessThanOrEqual(48);
+    // The mark cuts are what the login gate uses at each width.
     expect(logoRows(80)).toBe(LOGO_NARROW);
     expect(logoRows(48)).toBe(LOGO_MARK);
     expect(LOGO_MARK.every((r) => [...r].length <= 16)).toBe(true);
-    const narrow = headerLines(48, logoRows(48), info).map((l) => l.text).join("\n");
-    expect(narrow).toContain("Glyphh v1.0.0");
-    expect(narrow).toContain(LOGO_MARK[1]!.trim());
-    for (const l of headerLines(48, logoRows(48), info)) expect([...l.text].length).toBeLessThanOrEqual(48);
     // Signed out: the card says so and how to fix it.
-    const out = headerLines(80, [], { ...info, name: null, plan: null, email: null, model: null }).map((l) => l.text).join("\n");
+    const out = headerLines(80, LOGO_MARK, { ...info, name: null, plan: null, email: null, model: null, tips: [] }).map((l) => l.text).join("\n");
+    expect(out).toContain("Welcome to Glyphh");
     expect(out).toContain("not signed in · /login");
-    expect(out).toContain("model the org's default");
+    expect(out).toContain("the org's default");
+    expect(out).not.toContain("Tips for getting started");
+  });
+
+  it("the picker lists numbered options, ticks the current one and points at the selection", () => {
+    const frame = render(
+      <Picker width={80} selected={1} spec={{
+        title: "Select model",
+        description: "Any gateway model.",
+        options: [{ id: "", label: "Default (org)", current: true, detail: "the org's default" }, { id: "gpt-5.6", label: "gpt-5.6", detail: "OpenAI" }],
+        secondary: { key: "s", label: "use this session only" },
+        enterLabel: "set as default",
+        onPick: () => undefined,
+      }} />,
+    ).lastFrame()!;
+    expect(frame).toContain("Select model");
+    expect(frame).toContain("1. Default (org) ✔");
+    expect(frame).toContain("❯  2. gpt-5.6");
+    expect(frame).toContain("Enter to set as default · s to use this session only · Esc to cancel");
   });
 
   it("the composer draws a real cursor inside the text", () => {
     const frame = render(<InputBar width={60} value="hello there" cursor={5} busy={false} />).lastFrame()!;
     expect(frame).toContain("hello");
     expect(frame).toContain("there");
-    expect(frame).toContain("Send");
+    expect(render(<InputBar width={60} value="" busy={false} />).lastFrame()!).toContain("? for shortcuts");
   });
 
   it("the slash menu lists matching commands with the selection marked", () => {
@@ -83,12 +109,11 @@ describe("TUI layout", () => {
     expect(deleteWordBefore("", 0)).toEqual({ value: "", cursor: 0 });
   });
 
-  it("input bar shows the typed text and a Send button", () => {
+  it("input bar shows the typed text behind the prompt glyph", () => {
     const { lastFrame } = render(<InputBar width={60} value="hello there" busy={false} />);
     const frame = lastFrame()!;
     expect(frame).toContain("hello there");
-    expect(frame).toContain("Send");
-    expect(frame).toContain("›");
+    expect(frame).toContain("❯");
   });
 
   it("footer shows permission mode far-left, then model slots, then the loop far-right", () => {
@@ -130,15 +155,15 @@ describe("TUI layout", () => {
 });
 
 describe("line model", () => {
-  it("user input leads with the purple bar; answers with the bullet", () => {
-    expect(userLines("hi", 60).map((l) => l.text).join("\n")).toContain("▌ hi");
+  it("user input leads with the prompt glyph; answers with the bullet", () => {
+    expect(userLines("hi", 60).map((l) => l.text).join("\n")).toContain("❯ hi");
     expect(answerLines("hello!", 60).map((l) => l.text).join("\n")).toContain("● hello!");
   });
 
   it("a slash command carries its └ result lines", () => {
     const lines = commandLines("/login chris@glyphh.ai", ["Login successful", "signed in"], 80);
     const text = lines.map((l) => l.text).join("\n");
-    expect(text).toContain("▌ /login chris@glyphh.ai");
+    expect(text).toContain("❯ /login chris@glyphh.ai");
     expect(text).toContain("└ Login successful");
     expect(text).toContain("signed in");
     expect(lines.filter((l) => l.style === "result").length).toBe(2);

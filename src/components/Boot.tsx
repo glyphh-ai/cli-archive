@@ -36,11 +36,14 @@ export interface BootProps {
   initialMode?: PermissionMode;
   /** An opening prompt from the command line — sent once the chat is up. */
   initialPrompt?: string;
+  /** `--resume <id>` / `--continue`: the shared-store chat to open. */
+  resumeId?: string;
+  continueLast?: boolean;
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initialModel, initialMode, initialPrompt }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initialModel, initialMode, initialPrompt, resumeId, continueLast }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -129,6 +132,8 @@ export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initia
       {...(initialModel ? { initialModel } : {})}
       {...(initialMode ? { initialMode } : {})}
       {...(initialPrompt && epoch === 0 ? { initialPrompt } : {})}
+      {...(resumeId ? { resumeId } : {})}
+      {...(continueLast ? { continueLast } : {})}
     />
   );
 }

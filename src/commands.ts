@@ -11,11 +11,13 @@
 import type { Client } from "@glyphh/sdk";
 import { loadAccount, type Account } from "./glyphh.js";
 import { compactChat, toolsFor } from "./loop.js";
-import { availableModels, type ModelChoice } from "./models.js";
+import { availableModels, defaultModel, type ModelChoice } from "./models.js";
 import { openBrowser } from "./open-browser.js";
 import { readPrefs } from "./prefs.js";
+import { agoLabel, listGlyphhChats, touchedAt } from "./sessions.js";
 import { THEMES, DEFAULT_THEME } from "./theme.js";
 import { PERMISSION_LABEL, PERMISSION_MODES, permissionModeOf, type PermissionMode } from "./types.js";
+import type { PickerSpec } from "./components/Picker.js";
 
 /** What the session has spent so far — /cost reads it. */
 export interface SessionCost {
@@ -53,6 +55,12 @@ export interface CommandCtx {
   emit: (lines: string[]) => void;
   /** Append a transcript note (a compaction's summary marker). */
   note: (text: string) => void;
+  /** Open a selector in the strip (the other CLIs' /model flow). */
+  openPicker: (spec: PickerSpec) => void;
+  /** The shared session store (null until signed in). */
+  sessionsFile: string | null;
+  /** Swap the transcript for a stored chat, in place. */
+  resumeChat: (id: string) => Promise<string[]>;
 }
 
 export interface SlashCommand {
@@ -220,7 +228,25 @@ const COMMANDS: SlashCommand[] = [
     async run(ctx, args) {
       const models = await availableModels(ctx.client);
       const pick = args[0];
-      if (!pick) return modelLines(models, ctx.model);
+      if (!pick) {
+        const orgDefault = await defaultModel(ctx.client).catch(() => "");
+        const current = ctx.model;
+        ctx.openPicker({
+          title: "Select model",
+          description: "Any model your organization runs on the gateway. Enter makes it this device's default; s uses it for this session only.",
+          options: [
+            { id: "", label: "Default (org)", detail: orgDefault ? `the org's default · currently ${orgDefault}` : "the org's default", current: current === null },
+            ...models.map((m) => ({ id: m.id, label: m.id, ...(m.name !== m.id ? { detail: m.name } : {}), current: m.id === current })),
+          ],
+          secondary: { key: "s", label: "use this session only" },
+          enterLabel: "set as default",
+          onPick: (id, session) => {
+            ctx.setModel(id || null, { session });
+            ctx.note(`model → ${id || "the org's default"}${session ? " (this session)" : ""}`);
+          },
+        });
+        return [];
+      }
       if (pick === "default") {
         ctx.setModel(null);
         return ["model → the org's default"];
@@ -237,11 +263,45 @@ const COMMANDS: SlashCommand[] = [
     usage: "/permissions [mode]",
     run(ctx, args) {
       const raw = args[0];
-      if (!raw) return permissionLines(ctx.permission);
+      if (!raw) {
+        ctx.openPicker({
+          title: "Permission mode",
+          description: "How the loop treats edits and commands. shift+tab cycles the first three.",
+          options: PERMISSION_MODES.map((m) => ({ id: m, label: m, detail: PERMISSION_LABEL[m], current: m === ctx.permission })),
+          enterLabel: "set",
+          onPick: (id) => {
+            const mode = permissionModeOf(id);
+            if (!mode) return;
+            ctx.setPermission(mode);
+            ctx.note(`permissions → ${mode} · ${PERMISSION_LABEL[mode]}`);
+          },
+        });
+        return [];
+      }
       const mode = permissionModeOf(raw);
       if (!mode) return [`unknown mode: ${raw} — one of ${PERMISSION_MODES.join(", ")}`];
       ctx.setPermission(mode);
       return [`permissions → ${mode} · ${PERMISSION_LABEL[mode]}`];
+    },
+  },
+  {
+    name: "resume",
+    aliases: ["sessions", "chats"],
+    summary: "pick up an earlier conversation (shared with the desktop): /resume [id]",
+    usage: "/resume [id]",
+    async run(ctx, args) {
+      if (args[0]) return ctx.resumeChat(args[0]);
+      if (!ctx.sessionsFile) return ["sign in first — conversations are stored per account"];
+      const chats = listGlyphhChats(ctx.sessionsFile, 30).filter((c) => c.id !== ctx.chatId);
+      if (!chats.length) return ["no earlier Glyphh-loop conversations yet — this one lands in the desktop's recents after its first answer"];
+      ctx.openPicker({
+        title: "Resume a conversation",
+        description: "Glyphh-loop chats from this account, newest first — the same list the desktop's recents show.",
+        options: chats.map((c) => ({ id: c.id, label: c.title.length > 34 ? `${c.title.slice(0, 33)}…` : c.title, detail: `${c.messages.length} msg · ${agoLabel(touchedAt(c))}${c.workdir ? ` · ${c.workdir.replace(/^\/Users\/[^/]+/, "~")}` : ""}` })),
+        enterLabel: "resume",
+        onPick: (id) => { void ctx.resumeChat(id).then((lines) => { for (const l of lines) ctx.note(l); }); },
+      });
+      return [];
     },
   },
   {
@@ -266,11 +326,13 @@ const COMMANDS: SlashCommand[] = [
       const name = args[0]?.toLowerCase();
       if (!name) {
         const cur = readPrefs().theme ?? DEFAULT_THEME;
-        return [
-          "themes:",
-          ...THEMES.map((t) => `  ${t.name === cur ? "▸" : " "} ${t.name.padEnd(9)} ${t.description}`),
-          "switch:  /theme <name>",
-        ];
+        ctx.openPicker({
+          title: "Theme",
+          options: THEMES.map((t) => ({ id: t.name, label: t.label, detail: t.description, current: t.name === cur })),
+          enterLabel: "apply",
+          onPick: (id) => { ctx.setTheme(id); ctx.note(`theme → ${id}`); },
+        });
+        return [];
       }
       const match = THEMES.find((t) => t.name === name);
       if (!match) return [`unknown theme: ${name} — try ${THEMES.map((t) => t.name).join(", ")}`];
@@ -290,9 +352,16 @@ const COMMANDS: SlashCommand[] = [
 
 /** The "What's new" panel copy (also shown by `/version`). */
 export const RELEASE_NOTES: string[] = [
-  "The Glyphh loop runs right here, on any model your org serves on the gateway",
-  "/model picks one · /permissions or shift+tab sets the mode · ↑ recalls prompts",
-  "Files + shell work in this folder; connected apps ride the gateway",
+  "The Glyphh loop runs in your terminal, on any gateway model",
+  "Conversations are shared with the desktop: /resume picks one up",
+  "/model, /permissions and /theme open selectors; ↑ recalls prompts",
+];
+
+/** The left panel's tips (shown until the first turn). */
+export const TIPS: string[] = [
+  "Ask in plain words — files, shell and connected apps are tools",
+  "shift+tab cycles permissions; / opens the command menu",
+  "Esc stops a turn · ctrl+o expands tool output",
 ];
 
 const BY_NAME = new Map<string, SlashCommand>();
