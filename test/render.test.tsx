@@ -17,38 +17,69 @@ import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
 import { openBrowser } from "../src/open-browser.js";
-import { toolLabel, connectionAuthHint } from "../src/components/App.js";
-import { CAT_ROWS } from "../src/banner.js";
+import { toolLabel, connectionAuthHint, deleteWordBefore } from "../src/components/App.js";
+import { LOGO_NARROW, LOGO_WIDE, logoRows } from "../src/banner.js";
+import { SlashMenu } from "../src/components/SlashMenu.js";
+import { matchCommands, permissionLines } from "../src/commands.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
 
 describe("TUI layout", () => {
-  it("banner lines: version in the outline, cat, account, What's new — cat hidden when narrow", () => {
+  it("banner lines: the block logo when it fits, then one identity card with version, account, folder, model and What's new", () => {
     const info = {
       version: "v1.0.0",
       name: "Chris",
-      plan: "Pro · 812 credits",
+      plan: "Pro",
       email: "chris@glyphh.ai",
       cwd: "~/development/yo",
+      model: "claude-sonnet-5",
+      server: "api.glyphh.ai",
       notes: ["Full-screen chat TUI", "Slash commands: /login /status"],
     };
-    const wide = headerLines(100, CAT_ROWS, info).map((l) => l.text).join("\n");
+    const wide = headerLines(120, logoRows(120), info).map((l) => l.text).join("\n");
     expect(wide).toContain("Glyphh v1.0.0"); // version in the border
     expect(wide).toContain("┌─"); // the hand-drawn outline
-    expect(wide).toContain(CAT_ROWS[1]!.trim().slice(0, 2)); // some cat braille rendered
-    expect(wide).toContain("Chris");
-    expect(wide).toContain("Pro · 812 credits");
-    expect(wide).toContain("~/development/yo"); // cwd under the account
-    expect(wide).toContain("What's new"); // right panel header
-    expect(wide).toContain("Full-screen chat TUI"); // a release note
-    // Narrow terminal: one column, and NO cat — braille art can't downscale,
-    // so hiding beats mangling.
-    const narrow = headerLines(48, CAT_ROWS, info).map((l) => l.text).join("\n");
+    expect(wide).toContain(LOGO_WIDE[3]!.trim().slice(0, 4)); // the wide logo rendered
+    expect(wide).toContain("Chris · Pro · chris@glyphh.ai");
+    expect(wide).toContain("~/development/yo");
+    expect(wide).toContain("model claude-sonnet-5 · api.glyphh.ai");
+    expect(wide).toContain("What's new");
+    expect(wide).toContain("Full-screen chat TUI");
+    // A medium terminal gets the narrow cut; a narrow one no logo at all —
+    // block art cannot downscale, so hiding beats mangling.
+    expect(logoRows(80)).toBe(LOGO_NARROW);
+    expect(logoRows(48)).toEqual([]);
+    const narrow = headerLines(48, logoRows(48), info).map((l) => l.text).join("\n");
     expect(narrow).toContain("Glyphh v1.0.0");
-    expect(narrow).not.toContain(CAT_ROWS[1]!.trim().slice(0, 2));
-    expect(narrow).toContain("What's new");
-    // Every line fits the width — nothing to wrap or trash.
-    for (const l of headerLines(48, CAT_ROWS, info)) expect([...l.text].length).toBeLessThanOrEqual(48);
+    expect(narrow).not.toContain(LOGO_NARROW[1]!.trim().slice(0, 3));
+    for (const l of headerLines(48, logoRows(48), info)) expect([...l.text].length).toBeLessThanOrEqual(48);
+    // Signed out: the card says so and how to fix it.
+    const out = headerLines(80, [], { ...info, name: null, plan: null, email: null, model: null }).map((l) => l.text).join("\n");
+    expect(out).toContain("not signed in · /login");
+    expect(out).toContain("model the org's default");
+  });
+
+  it("the composer draws a real cursor inside the text", () => {
+    const frame = render(<InputBar width={60} value="hello there" cursor={5} busy={false} />).lastFrame()!;
+    expect(frame).toContain("hello");
+    expect(frame).toContain("there");
+    expect(frame).toContain("Send");
+  });
+
+  it("the slash menu lists matching commands with the selection marked", () => {
+    const items = matchCommands("m");
+    expect(items.map((c) => c.name)).toEqual(["mcp", "model"]);
+    const frame = render(<SlashMenu width={80} items={items} selected={1} />).lastFrame()!;
+    expect(frame).toContain("/mcp");
+    expect(frame).toContain("▸ /model");
+    expect(matchCommands("").length).toBeGreaterThan(10);
+    expect(matchCommands("zz")).toEqual([]);
+  });
+
+  it("word delete removes the word before the cursor", () => {
+    expect(deleteWordBefore("fix the tests", 13)).toEqual({ value: "fix the ", cursor: 8 });
+    expect(deleteWordBefore("fix the tests", 8)).toEqual({ value: "fix tests", cursor: 4 });
+    expect(deleteWordBefore("", 0)).toEqual({ value: "", cursor: 0 });
   });
 
   it("input bar shows the typed text and a Send button", () => {
@@ -63,25 +94,26 @@ describe("TUI layout", () => {
     const { lastFrame } = render(
       <Footer
         width={80}
-        permissionMode="auto"
-        loop="default"
-        slots={[{ label: "default", model: "claude-sonnet-5" }]}
+        permissionMode="bypass"
+        loop="glyphh"
+        slots={[{ label: "model", model: "claude-sonnet-5" }]}
       />,
     );
     const frame = lastFrame()!;
-    expect(frame).toContain("auto-approve"); // permission (far left)
+    expect(frame).toContain("bypass permissions on"); // permission (far left), the other CLIs' words
     expect(frame).toContain("claude-sonnet-5"); // resolved model slot
-    expect(frame).toContain("loop default"); // loop (far right)
+    expect(frame).toContain("loop glyphh"); // loop (far right)
     // Order: permission before model before loop.
-    expect(frame.indexOf("auto-approve")).toBeLessThan(frame.indexOf("claude-sonnet-5"));
-    expect(frame.indexOf("claude-sonnet-5")).toBeLessThan(frame.indexOf("loop default"));
+    expect(frame.indexOf("bypass permissions on")).toBeLessThan(frame.indexOf("claude-sonnet-5"));
+    expect(frame.indexOf("claude-sonnet-5")).toBeLessThan(frame.indexOf("loop glyphh"));
+    expect(permissionLines("plan").join("\n")).toContain("▸ plan");
   });
 
   it("footer labels each slot when a loop declares more than one", () => {
     const { lastFrame } = render(
       <Footer
         width={100}
-        permissionMode="ask"
+        permissionMode="default"
         loop="planning"
         slots={[
           { label: "planner", model: "claude-opus-4-8" },
@@ -135,8 +167,8 @@ describe("line model", () => {
     expect(lines[0]!.text).toContain("exit 1");
   });
 
-  it("TranscriptLine renders a selected head inverted and a detail with its gutter", () => {
-    const sel = render(<TranscriptLine line={{ text: "▸ step", style: "headSel" }} />).lastFrame()!;
+  it("TranscriptLine renders a head with its glyph and a detail with its gutter", () => {
+    const sel = render(<TranscriptLine line={{ text: "▸ step", style: "head" }} />).lastFrame()!;
     expect(sel).toContain("▸ step");
     const detail = render(<TranscriptLine line={{ text: "  │ → a.ts", style: "detail" }} />).lastFrame()!;
     expect(detail).toContain("│ → a.ts");
@@ -144,28 +176,21 @@ describe("line model", () => {
 });
 
 describe("status strip", () => {
-  it("a settled turn shows the verb, duration, tokens and credits", () => {
-    const last: ChatTurn = {
-      id: "t1", text: "done", status: "done", durationMs: 2300,
-      tokensUp: 120, tokensDown: 480, credits: 3, stubbed: false, degraded: false,
-    };
+  it("a settled turn shows the verb, duration and tokens", () => {
+    const last: ChatTurn = { id: "t1", text: "done", status: "done", durationMs: 2300, tokensUp: 120, tokensDown: 480 };
     const frame = render(
       <SubFooter width={80} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
     ).lastFrame()!;
     expect(frame).toContain("Brewed for 2.3s");
     expect(frame).toContain("120↑ 480↓ tok");
-    expect(frame).toContain("◈ 3 credits");
   });
 
-  it("a stubbed turn warns that no model is bound", () => {
-    const last: ChatTurn = {
-      id: "t1", text: "", status: "done", durationMs: 100,
-      tokensUp: 0, tokensDown: 0, credits: null, stubbed: true, degraded: false,
-    };
+  it("a stopped turn says so", () => {
+    const last: ChatTurn = { id: "t1", text: "", status: "stopped", durationMs: 100, tokensUp: 0, tokensDown: 0 };
     const frame = render(
       <SubFooter width={100} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
     ).lastFrame()!;
-    expect(frame).toContain("stub answered");
+    expect(frame).toContain("stopped");
   });
 });
 

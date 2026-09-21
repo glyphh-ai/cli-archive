@@ -5,7 +5,7 @@
  * loop in a terminal card, and what a person types. Pure, so it is tested.
  */
 
-import type { PermissionMode } from "./types.js";
+import { permissionModeOf, type PermissionMode } from "./types.js";
 
 export interface Flags {
   model?: string;
@@ -14,16 +14,11 @@ export interface Flags {
   prompt?: string;
 }
 
-/** The permission words every Glyphh surface uses → this TUI's chip. acceptEdits
- *  has no chip of its own: it lands on ask (edits then ask like anything else). */
+export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--bridge] [prompt…]";
+
+/** The permission words every Glyphh surface uses → this TUI's chip. */
 export function permissionFlag(raw: string): PermissionMode | undefined {
-  switch (raw) {
-    case "plan": return "plan";
-    case "auto": return "auto";
-    case "ask": case "acceptEdits": return "ask";
-    case "read-only": case "readonly": return "read-only";
-    default: return undefined;
-  }
+  return permissionModeOf(raw);
 }
 
 /** Parse argv. Unknown `--flags` are refused with a usage line; bare words are the prompt. */
@@ -34,11 +29,12 @@ export function parseFlags(argv: string[]): Flags {
     const a = argv[i] ?? "";
     if (a === "--model") { const v = argv[++i]; if (v) out.model = v; continue; }
     if (a.startsWith("--model=")) { out.model = a.slice(8); continue; }
-    if (a === "--permission") { const p = permissionFlag(argv[++i] ?? ""); if (p) out.permission = p; continue; }
-    if (a.startsWith("--permission=")) { const p = permissionFlag(a.slice(13)); if (p) out.permission = p; continue; }
+    if (a === "--permission" || a === "--permission-mode") { const p = permissionFlag(argv[++i] ?? ""); if (p) out.permission = p; continue; }
+    if (a.startsWith("--permission=") || a.startsWith("--permission-mode=")) { const p = permissionFlag(a.slice(a.indexOf("=") + 1)); if (p) out.permission = p; continue; }
+    if (a === "--dangerously-skip-permissions") { out.permission = "bypass"; continue; }
     if (a === "--bridge") { out.bridgeUrl = process.env.GLYPHH_BRIDGE_URL ?? "http://127.0.0.1:4747"; continue; }
     if (a.startsWith("--")) {
-      process.stderr.write(`glyphh: unknown flag ${a}\nusage: glyphh [--model <id>] [--permission ask|plan|acceptEdits|auto] [--bridge] [prompt…]\n`);
+      process.stderr.write(`glyphh: unknown flag ${a}\n${USAGE}\n`);
       process.exit(2);
     }
     words.push(a);

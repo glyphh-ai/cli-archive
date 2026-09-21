@@ -58,6 +58,10 @@ export interface LoopEngine {
   stop(chatId: string): boolean;
   respondApproval(id: string, allow: boolean): boolean;
   forgetAll(): void;
+  /** /mcp — the tool names the chat carries (empty before its first turn). */
+  toolNames?(chatId: string): string[];
+  /** /compact — fold the conversation so far into a summary, now. */
+  compactNow?(chatId: string, emit?: LoopEmit): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface LoopTurnOptions {
@@ -88,15 +92,16 @@ export interface LoopTurnResult {
   error?: string;
 }
 
-/** The TUI's four-mode chip → the loop's permission vocabulary. Both "plan"
- *  and "read-only" map to the loop's read-only `plan` gate. */
+/** The chip → the loop's permission vocabulary: default asks, acceptEdits
+ *  edits freely, plan reads only, bypass runs everything. */
 export function loopPermission(mode: PermissionMode): LoopPermission {
   switch (mode) {
-    case "auto":
+    case "bypass":
       return "auto";
     case "plan":
-    case "read-only":
       return "plan";
+    case "acceptEdits":
+      return "acceptEdits";
     default:
       return "ask";
   }
@@ -218,4 +223,18 @@ export async function runLoopTurn(opts: LoopTurnOptions, h: LoopTurnHandlers): P
   // settle; an aborted run that also errored reads as stopped.
   if (stopped && opts.signal?.aborted) error = undefined;
   return { text, stopped: stopped || !!opts.signal?.aborted, ...(error ? { error } : {}) };
+}
+
+// ── the slash commands' seams ────────────────────────────────────────────────
+
+/** /mcp: the chat's tool names, split into the loop's own and the lent ones. */
+export function toolsFor(client: Client, chatId: string): { builtin: string[]; lent: string[] } {
+  const names = engineFor(client).toolNames(chatId);
+  const own = new Set(["read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "bash"]);
+  return { builtin: names.filter((n) => own.has(n)), lent: names.filter((n) => !own.has(n)) };
+}
+
+/** /compact: fold the conversation now. Deltas (the "compacted" note) reach `onDelta`. */
+export function compactChat(client: Client, chatId: string, onDelta?: (text: string) => void): Promise<{ ok: boolean; error?: string }> {
+  return engineFor(client).compactNow(chatId, (ev) => { if (ev.type === "delta") onDelta?.(ev.delta); });
 }

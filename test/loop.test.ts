@@ -55,7 +55,7 @@ function handlers(): LoopTurnHandlers & { deltas: string[]; starts: string[]; do
   return h;
 }
 
-const base = { client, model: "m", chatId: "c1", history: [] as Array<{ role: "user" | "assistant"; content: string }>, prompt: "hi", permission: "ask" as const };
+const base = { client, model: "m", chatId: "c1", history: [] as Array<{ role: "user" | "assistant"; content: string }>, prompt: "hi", permission: "default" as const };
 
 describe("runLoopTurn", () => {
   it("streams deltas, maps tool events to receipts, and resolves with the full answer", async () => {
@@ -133,25 +133,29 @@ describe("runLoopTurn", () => {
 });
 
 describe("loopPermission", () => {
-  it("maps the four chips onto the loop's words", () => {
-    expect(loopPermission("ask")).toBe("ask");
-    expect(loopPermission("auto")).toBe("auto");
+  it("maps the four standard modes onto the loop's words", () => {
+    expect(loopPermission("default")).toBe("ask");
+    expect(loopPermission("acceptEdits")).toBe("acceptEdits");
     expect(loopPermission("plan")).toBe("plan");
-    expect(loopPermission("read-only")).toBe("plan");
+    expect(loopPermission("bypass")).toBe("auto");
   });
 });
 
 describe("flags", () => {
   it("parses the desktop's launch line and a person's prompt", () => {
     expect(parseFlags(["--model", "claude-sonnet-5", "--permission", "plan", "fix", "the", "tests"])).toEqual({ model: "claude-sonnet-5", permission: "plan", prompt: "fix the tests" });
-    expect(parseFlags(["--model=m", "--permission=auto"])).toEqual({ model: "m", permission: "auto" });
+    expect(parseFlags(["--model=m", "--permission=bypass"])).toEqual({ model: "m", permission: "bypass" });
     expect(parseFlags([])).toEqual({});
   });
-  it("acceptEdits has no chip of its own and lands on ask; unknown words are ignored", () => {
-    expect(permissionFlag("acceptEdits")).toBe("ask");
-    expect(permissionFlag("readonly")).toBe("read-only");
-    expect(permissionFlag("yolo")).toBeUndefined();
-    expect(parseFlags(["--permission", "yolo"])).toEqual({});
+  it("every spelling of the modes maps; unknown words are ignored", () => {
+    expect(permissionFlag("ask")).toBe("default");
+    expect(permissionFlag("acceptEdits")).toBe("acceptEdits");
+    expect(permissionFlag("readonly")).toBe("plan");
+    expect(permissionFlag("auto")).toBe("bypass");
+    expect(permissionFlag("bypassPermissions")).toBe("bypass");
+    expect(permissionFlag("nope")).toBeUndefined();
+    expect(parseFlags(["--permission", "nope"])).toEqual({});
+    expect(parseFlags(["--dangerously-skip-permissions"])).toEqual({ permission: "bypass" });
   });
   it("--bridge names the bridge URL", () => {
     expect(parseFlags(["--bridge"]).bridgeUrl).toMatch(/^http/);

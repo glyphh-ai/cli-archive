@@ -1,11 +1,8 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * SubFooter.tsx — the status strip pinned between the transcript and the
- * composer. While a turn runs it carries the LIVE signal (spinner · verbing ·
- * elapsed · token burn); when idle it holds exactly one line — the last turn's
- * cost (✻ Verbed for Ns · tokens · ◈ $). The transcript stays pure
- * content while "what's happening right now" always sits in the same place.
+ * SubFooter.tsx — the status line above the composer: the spinner and the
+ * running verb while a turn works, else the settle line (verb, duration, tokens).
  */
 
 import React from "react";
@@ -36,7 +33,7 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
           </Text>
           <Text color={theme.muted}> {verb.ing}… </Text>
           <Text color={theme.faint}>
-            ({elapsed.toFixed(1)}s{burn})
+            ({elapsed.toFixed(1)}s{burn} · esc to stop)
           </Text>
         </Text>
       </Box>
@@ -46,15 +43,12 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
     const cost: string[] = [];
     if (last.durationMs !== undefined) cost.push(`${verb.past} for ${(last.durationMs / 1000).toFixed(1)}s`);
     if (last.tokensUp + last.tokensDown > 0) cost.push(`${last.tokensUp}↑ ${last.tokensDown}↓ tok`);
-    if (last.usd !== null) cost.push(`◈ $${last.usd.toFixed(4)}`);
-    if (last.status === "refused") cost.push("refused");
     if (last.status === "error") cost.push("failed");
+    if (last.status === "stopped") cost.push("stopped");
     return (
       <Box width={width} paddingX={1} flexDirection="column">
         <Text color={theme.faint} wrap="truncate-end">
           ✻ {cost.join(" · ")}
-          {last.stubbed ? "  ⚠ no model bound — stub answered (/configure)" : ""}
-          {last.degraded ? "  ⚠ lane degraded (unfold the step detail)" : ""}
         </Text>
       </Box>
     );

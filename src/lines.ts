@@ -11,6 +11,7 @@
 import type { TurnStep } from "./types.js";
 
 export type LineStyle =
+  | "logo"
   | "user"
   | "command"
   | "result"
@@ -109,10 +110,9 @@ export function noteLines(text: string): Line[] {
  *  carries the accent; body rows wrap to the card's inner width. */
 
 // ── The launch banner as SCROLLABLE lines ────────────────────────────────────
-// The header used to be fixed chrome above the transcript; on short terminals
-// it ate the whole screen and on narrow ones the braille cat wrapped into
-// soup. As transcript lines it scrolls away naturally, and the cat renders
-// only when the terminal is wide enough to hold it intact.
+// The logo (banner.ts) leads, then ONE identity card: who, where, what runs the
+// next turn, and what is new. As transcript lines it scrolls away naturally,
+// and the logo renders only at a width that holds it intact.
 
 export interface HeaderInfo {
   version: string;
@@ -120,59 +120,49 @@ export interface HeaderInfo {
   plan: string | null;
   email: string | null;
   cwd: string;
+  /** The model the next turn runs on (null while unresolved). */
+  model: string | null;
+  /** The control plane, host only. */
+  server: string;
   notes: string[];
 }
 
-/** Braille + box glyphs are single-width, so code-point length IS columns. */
+/** Box + quadrant glyphs are single-width, so code-point length IS columns. */
 const clen = (s: string): number => [...s].length;
 const padCell = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - clen(s)));
-const centerCell = (s: string, w: number): string => {
-  const pad = Math.max(0, w - clen(s));
-  const left = Math.floor(pad / 2);
-  return " ".repeat(left) + s + " ".repeat(pad - left);
-};
 const clipEnd = (s: string, w: number): string =>
   clen(s) <= w ? s : [...s].slice(0, Math.max(0, w - 1)).join("") + "…";
 const clipStart = (s: string, w: number): string =>
   clen(s) <= w ? s : "…" + [...s].slice(clen(s) - (w - 1)).join("");
 
-/** Show the cat only when the two-panel layout genuinely fits. */
-const CAT_MIN_WIDTH = 64;
-
-export function headerLines(width: number, cat: readonly string[], info: HeaderInfo): Line[] {
+export function headerLines(width: number, logo: readonly string[], info: HeaderInfo): Line[] {
   const w = Math.max(30, Math.min(width, 100));
   const inner = w - 2;
+  const out: Line[] = [];
+  if (logo.length) {
+    out.push({ text: "", style: "blank" });
+    for (const row of logo) out.push({ text: `  ${row}`, style: "logo" });
+    out.push({ text: "", style: "blank" });
+  }
   const label = `Glyphh ${info.version}`;
-  const out: Line[] = [{
+  out.push({
     text: `┌─ ${clipEnd(label, inner - 5)} ${"─".repeat(Math.max(0, inner - clen(label) - 5))}─┐`,
     style: "cardTitle",
-  }];
+  });
   const row = (text: string): void => { out.push({ text: `│${padCell(clipEnd(text, inner), inner)}│`, style: "cardBody" }); };
-
-  const who: string[] = info.name
-    ? [info.name, info.plan ?? "", info.email ?? "", clipStart(info.cwd, inner - 4)].filter(Boolean)
-    : ["not signed in", "/login to sign in", clipStart(info.cwd, inner - 4)];
-  const news = ["What's new", ...info.notes, "", "/release-notes for more"];
-
-  if (w >= CAT_MIN_WIDTH) {
-    // Two panels: the cat + identity on the left, release notes on the right.
-    const leftW = 24;
-    const rightW = inner - leftW - 1;
-    const left = [...cat.map((r) => centerCell(r, leftW)), "", ...who.map((t) => centerCell(clipEnd(t, leftW - 2), leftW))];
-    const right = news.map((t) => ` ${clipEnd(t, rightW - 2)}`);
-    const rowsN = Math.max(left.length, right.length);
-    for (let i = 0; i < rowsN; i++) {
-      out.push({
-        text: `│${padCell(left[i] ?? "", leftW)}│${padCell(right[i] ?? "", rightW)}│`,
-        style: "cardBody",
-      });
-    }
-  } else {
-    // Narrow: one column, no cat — nothing left to trash.
-    for (const t of who) row(t);
+  const who = info.name
+    ? [` ${[info.name, info.plan ?? "", info.email ?? ""].filter(Boolean).join(" · ")}`]
+    : [" not signed in · /login to sign in"];
+  for (const t of who) row(t);
+  row(` ${clipStart(info.cwd, inner - 2)}`);
+  row(` model ${info.model ?? "the org's default"} · ${info.server}`);
+  if (info.notes.length) {
     row("");
-    for (const t of news) row(t);
+    row(" What's new");
+    for (const t of info.notes) row(`   ${t}`);
   }
+  row("");
+  row(" /help for commands · ? shortcuts · shift+tab permissions");
   out.push({ text: `└${"─".repeat(inner)}┘`, style: "cardEdge" });
   out.push({ text: "", style: "blank" });
   return out;

@@ -20,7 +20,7 @@ your terminal on any model your organization serves on the gateway. A thin view 
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ › now wire it into the CLI▍                                       Send ⏎    │
 └───────────────────────────────────────────────────────────────────────────┘
- ◈ ask each time                                       claude-sonnet-5
+ ◈ default  (shift+tab to cycle)                        claude-sonnet-5
 ```
 
 ## Install
@@ -50,13 +50,18 @@ npm run build && node dist/main.js
 The TUI signs in on its own (device login) and keeps its session in
 `~/.glyphh/session.json`; the desktop app keeps a separate one.
 
-Keys: **Enter** send · **Shift+Tab** cycle permission mode · **Esc** stop the turn ·
-**ctrl+o** expand tool output · **Ctrl+C** quit. A parked permission ask takes **y** / **a**lways / **n**.
+Keys, the way every agent CLI has them: **Enter** send · **↑/↓** prompt history · **←/→** cursor
+(**ctrl+a/e** home/end, **ctrl+w** delete word, **ctrl+u** clear) · **Shift+Tab** cycle the
+permission mode · **Esc** stop the turn · **ctrl+o** expand tool output · **PgUp/PgDn** scroll ·
+**Ctrl+C** clear the line, twice to quit. A parked permission ask takes **y** / **a**lways / **n**.
 
-Commands: `/model` (list or pick the gateway model), `/use` (this session only), `/theme`,
-`/clear`, `/status`, `/login`, `/logout`, `/help`.
+Permission modes are the standard four: `default` (asks before edits and commands),
+`acceptEdits`, `plan` (read-only) and `bypass`. shift+tab cycles the first three.
 
-Flags: `glyphh [--model <id>] [--permission ask|plan|acceptEdits|auto] [--bridge] [prompt…]` —
+Commands (type `/` for the menu): `/help` `/clear` `/compact` `/config` `/cost` `/exit` `/login`
+`/logout` `/mcp` `/model` `/permissions` `/status` `/theme` `/version`.
+
+Flags: `glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--bridge] [prompt…]` —
 what the desktop passes when it opens the Glyphh loop in a terminal card.
 
 Env: `GLYPHH_SERVER_URL`, `GLYPHH_HOME`; `GLYPHH_APP_MCP_URL` + `GLYPHH_APP_MCP_TOKEN` lend the

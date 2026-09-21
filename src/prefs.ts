@@ -2,14 +2,14 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * prefs.ts — this device's TUI preferences (~/.glyphh/config.json, 0600): the
- * permission chip, the picked model, the theme. The `server` key belongs to
- * the CLI profile and is preserved, never owned here.
+ * permission chip, the picked model, the theme, the prompt history. The
+ * `server` key belongs to the CLI profile and is preserved, never owned here.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import type { PermissionMode } from "./types.js";
+import { permissionModeOf, type PermissionMode } from "./types.js";
 
 function home(): string {
   return process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh");
@@ -26,11 +26,25 @@ export interface Prefs {
   model?: string;
   /** The chosen theme's name (see theme.ts). Absent = never picked → the picker runs. */
   theme?: string;
+  /** The last prompts typed, oldest first (↑ recalls them). */
+  history?: string[];
 }
+
+/** How many prompts the history keeps. */
+export const HISTORY_MAX = 100;
 
 export function readPrefs(): Prefs {
   try {
-    return JSON.parse(readFileSync(file(), "utf8")) as Prefs;
+    const raw = JSON.parse(readFileSync(file(), "utf8")) as Record<string, unknown>;
+    // Older files spelled the chip ask/auto/read-only; every spelling maps.
+    const mode = permissionModeOf(typeof raw.permissionMode === "string" ? raw.permissionMode : undefined);
+    const out: Prefs = {};
+    if (typeof raw.server === "string") out.server = raw.server;
+    if (mode) out.permissionMode = mode;
+    if (typeof raw.model === "string" && raw.model) out.model = raw.model;
+    if (typeof raw.theme === "string") out.theme = raw.theme;
+    if (Array.isArray(raw.history)) out.history = raw.history.filter((h): h is string => typeof h === "string").slice(-HISTORY_MAX);
+    return out;
   } catch {
     return {};
   }
@@ -52,4 +66,12 @@ export function writePrefs(patch: PrefsPatch): void {
   } catch {
     /* best-effort */
   }
+}
+
+/** Remember a prompt (deduplicated against the newest, capped). */
+export function rememberPrompt(text: string): string[] {
+  const cur = readPrefs().history ?? [];
+  const next = cur[cur.length - 1] === text ? cur : [...cur, text].slice(-HISTORY_MAX);
+  writePrefs({ history: next });
+  return next;
 }

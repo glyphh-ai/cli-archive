@@ -14,6 +14,8 @@ import type { Line } from "../lines.js";
 
 export function TranscriptLine({ line }: { line: Line }): React.ReactElement {
   if (line.style === "blank") return <Text> </Text>;
+  // The logo: the brand in the theme's brightest ink, never clipped mid-glyph.
+  if (line.style === "logo") return <Text color={theme.text}>{line.text}</Text>;
   if (line.style === "head" || line.style === "headErr") {
     const glyph = line.text.slice(0, 2);
     return (

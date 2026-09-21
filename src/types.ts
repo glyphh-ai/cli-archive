@@ -1,13 +1,10 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * types.ts — the TUI's view model, derived purely from wire events. The chat is a
- * list of ITEMS (user lines, step sections, answers, notes, cards, commands) that
- * flatten to styled lines at render time (lines.ts); a turn accrues step receipts
- * while it streams and settles with per-turn meta (duration + tokens + dollars).
+ * types.ts — the TUI's own shapes: a turn, a transcript item, the permission chip.
  */
 
-export type TurnStatus = "running" | "done" | "refused" | "error" | "stopped";
+export type TurnStatus = "running" | "done" | "error" | "stopped";
 
 /** One tool/model step of a running turn, rendered as a collapsible receipt. */
 export interface TurnStep {
@@ -29,12 +26,6 @@ export interface ChatTurn {
   durationMs?: number;
   tokensUp: number;
   tokensDown: number;
-  /** Dollars metered this turn, once known (credits are dead, 2026-09-20). */
-  usd: number | null;
-  /** Real USD cost of this turn from the SDK result usage, once known. */
-  costUsd?: number;
-  stubbed: boolean;
-  degraded: boolean;
 }
 
 /** One transcript item (flattened to lines at render time). */
@@ -47,4 +38,30 @@ export type Item =
   | { id: string; kind: "note"; text: string }
   | { id: string; kind: "card"; title: string; body: string[] };
 
-export type PermissionMode = "ask" | "auto" | "plan" | "read-only";
+/** THE PERMISSION MODES — the same four every agent CLI speaks (his order,
+ *  2026-09-21): default asks before edits and commands, acceptEdits edits
+ *  freely and asks for commands, plan reads only, bypass runs everything.
+ *  shift+tab cycles the first three; bypass is asked for by name. */
+export type PermissionMode = "default" | "acceptEdits" | "plan" | "bypass";
+export const PERMISSION_MODES: readonly PermissionMode[] = ["default", "acceptEdits", "plan", "bypass"];
+/** The chip's cycle (shift+tab) — bypass stays out of it, like every other CLI. */
+export const PERMISSION_CYCLE: readonly PermissionMode[] = ["default", "acceptEdits", "plan"];
+
+/** Every spelling the flag, the desktop and other CLIs use → our word. */
+export function permissionModeOf(raw: string | undefined): PermissionMode | undefined {
+  switch ((raw ?? "").trim()) {
+    case "default": case "ask": return "default";
+    case "acceptEdits": case "accept-edits": case "accept": return "acceptEdits";
+    case "plan": case "read-only": case "readonly": return "plan";
+    case "bypass": case "bypassPermissions": case "bypass-permissions": case "auto": case "yolo": return "bypass";
+    default: return undefined;
+  }
+}
+
+/** The chip's label, as the footer and /permissions print it. */
+export const PERMISSION_LABEL: Record<PermissionMode, string> = {
+  default: "default · asks before edits and commands",
+  acceptEdits: "accept edits · asks before commands",
+  plan: "plan · read-only",
+  bypass: "bypass permissions · runs everything",
+};

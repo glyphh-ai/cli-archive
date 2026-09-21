@@ -1,11 +1,8 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * Footer.tsx — the status line beneath the composer, mirroring the desktop agent: the
- * permission mode sits far LEFT, and the right cluster carries the loop's resolved model
- * slots followed by the loop itself, furthest right. Chrome, not content — quiet by
- * design. Everything shown is resolved server-side (`loops.roles`) and rendered verbatim,
- * so the chip and the run can't disagree.
+ * Footer.tsx — the bottom line: the permission chip far left (the words every
+ * agent CLI uses), the model the next turn runs on far right.
  */
 
 import React from "react";
@@ -22,36 +19,40 @@ export interface FooterSlot {
 export interface FooterProps {
   width: number;
   permissionMode: PermissionMode;
-  /** The selected loop's slug. */
+  /** The loop's name. */
   loop: string;
-  /** The loop's model slots, resolved for this caller (empty while loading/offline). */
+  /** The model slots (empty while loading/offline). */
   slots: FooterSlot[];
 }
 
-const MODE_GLYPH: Record<PermissionMode, string> = {
-  ask: "◈ ask each time",
-  auto: "⏵ auto-approve",
-  plan: "✎ plan only",
-  "read-only": "◎ read-only",
+/** The chip, worded like the other CLIs' status lines. */
+export const MODE_GLYPH: Record<PermissionMode, string> = {
+  default: "◈ default",
+  acceptEdits: "✎ accept edits on",
+  plan: "⏸ plan mode on",
+  bypass: "⏵⏵ bypass permissions on",
 };
 
-/** One slot chip. A single-slot loop shows just its model; a multi-slot loop prefixes
- *  each with its label so "planner" and "coder" stay distinguishable. */
+/** One slot chip. A single-slot loop shows just its model; a multi-slot loop prefixes each with its label. */
 function Slot({ slot, solo }: { slot: FooterSlot; solo: boolean }): React.ReactElement {
   const set = slot.model !== null;
   return (
     <Text>
       {solo ? null : <Text color={theme.muted}>{slot.label} </Text>}
-      <Text color={set ? theme.accent : theme.faint}>{slot.model ?? "not set"}</Text>
+      <Text color={set ? theme.accent : theme.faint}>{slot.model ?? "resolving…"}</Text>
     </Text>
   );
 }
 
 export function Footer({ width, permissionMode, loop, slots }: FooterProps): React.ReactElement {
   const solo = slots.length === 1;
+  const mode = MODE_GLYPH[permissionMode];
   return (
     <Box width={width} paddingX={1} justifyContent="space-between">
-      <Text color={theme.muted}>{MODE_GLYPH[permissionMode]}</Text>
+      <Text>
+        <Text color={permissionMode === "bypass" ? "red" : theme.muted}>{mode}</Text>
+        <Text color={theme.faint}>{"  (shift+tab to cycle)"}</Text>
+      </Text>
       <Box>
         {slots.length === 0 ? (
           <Text color={theme.faint}>no model</Text>
