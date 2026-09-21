@@ -12,7 +12,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import type { Client } from "@glyphh/sdk";
 import { runLoopTurn, type ApprovalRequest } from "../loop.js";
-import { availableModels, defaultModel } from "../models.js";
+import { defaultModel } from "../models.js";
 import { readPrefs, writePrefs } from "../prefs.js";
 import { CAT_ROWS } from "../banner.js";
 import { InputBar } from "./InputBar.js";
