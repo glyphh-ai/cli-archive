@@ -47,13 +47,17 @@ function Slot({ slot, solo }: { slot: FooterSlot; solo: boolean }): React.ReactE
 export function Footer({ width, permissionMode, loop, slots }: FooterProps): React.ReactElement {
   const solo = slots.length === 1;
   const mode = MODE_GLYPH[permissionMode];
+  // The model and loop on the right never clip: the chip's hint gives way
+  // first, and the chip itself truncates before anything else does.
   return (
-    <Box width={width} paddingX={1} justifyContent="space-between">
-      <Text>
-        <Text color={permissionMode === "bypass" ? "red" : theme.muted}>{mode}</Text>
-        <Text color={theme.faint}>{"  (shift+tab to cycle)"}</Text>
-      </Text>
-      <Box>
+    <Box width={width} paddingX={1} justifyContent="space-between" gap={2}>
+      <Box flexShrink={1} minWidth={0}>
+        <Text wrap="truncate-end">
+          <Text color={permissionMode === "bypass" ? "red" : theme.muted}>{mode}</Text>
+          {width >= 110 ? <Text color={theme.faint}>{"  shift+tab cycles"}</Text> : null}
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
         {slots.length === 0 ? (
           <Text color={theme.faint}>no model</Text>
         ) : (

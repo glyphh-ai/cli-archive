@@ -370,10 +370,11 @@ for (const c of COMMANDS) {
   for (const a of c.aliases ?? []) BY_NAME.set(a, c);
 }
 
-/** The commands whose name or alias starts with `prefix` (no slash), for the menu. */
+/** The commands whose NAME starts with `prefix` (no slash), for the menu; an
+ *  alias counts only when typed in full (so `m` is mcp and model, not `/mode`). */
 export function matchCommands(prefix: string): SlashCommand[] {
   const p = prefix.toLowerCase();
-  return COMMANDS.filter((c) => c.name.startsWith(p) || (c.aliases ?? []).some((a) => a.startsWith(p)));
+  return COMMANDS.filter((c) => c.name.startsWith(p) || (p.length > 0 && (c.aliases ?? []).includes(p)));
 }
 
 /** Parse + run a `/command args` line. Returns the result lines (or an error line). */
