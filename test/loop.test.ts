@@ -156,6 +156,7 @@ describe("flags", () => {
     expect(permissionFlag("nope")).toBeUndefined();
     expect(parseFlags(["--permission", "nope"])).toEqual({});
     expect(parseFlags(["--dangerously-skip-permissions"])).toEqual({ permission: "bypass" });
+    expect(parseFlags(["--trust", "--resume", "cmubx4a46", "--continue"])).toEqual({ trust: true, resume: "cmubx4a46", continueLast: true });
   });
   it("--bridge names the bridge URL", () => {
     expect(parseFlags(["--bridge"]).bridgeUrl).toMatch(/^http/);

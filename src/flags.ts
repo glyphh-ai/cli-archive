@@ -16,9 +16,11 @@ export interface Flags {
   resume?: string;
   /** `--continue`: open the most recent Glyphh-loop chat. */
   continueLast?: boolean;
+  /** `--trust`: this folder is trusted — skip the question (the desktop chose it). */
+  trust?: boolean;
 }
 
-export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--resume <chatId> | --continue] [--bridge] [prompt…]";
+export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--resume <chatId> | --continue] [--trust] [--bridge] [prompt…]";
 
 /** The permission words every Glyphh surface uses → this TUI's chip. */
 export function permissionFlag(raw: string): PermissionMode | undefined {
@@ -39,6 +41,7 @@ export function parseFlags(argv: string[]): Flags {
     if (a === "--resume" || a === "-r") { const v = argv[++i]; if (v && /^[A-Za-z0-9_-]{1,64}$/.test(v)) out.resume = v; continue; }
     if (a.startsWith("--resume=")) { const v = a.slice(9); if (/^[A-Za-z0-9_-]{1,64}$/.test(v)) out.resume = v; continue; }
     if (a === "--continue" || a === "-c") { out.continueLast = true; continue; }
+    if (a === "--trust") { out.trust = true; continue; }
     if (a === "--bridge") { out.bridgeUrl = process.env.GLYPHH_BRIDGE_URL ?? "http://127.0.0.1:4747"; continue; }
     if (a.startsWith("--")) {
       process.stderr.write(`glyphh: unknown flag ${a}\n${USAGE}\n`);

@@ -69,6 +69,7 @@ function main(): void {
       {...(flags.prompt ? { initialPrompt: flags.prompt } : {})}
       {...(flags.resume ? { resumeId: flags.resume } : {})}
       {...(flags.continueLast ? { continueLast: true } : {})}
+      {...(flags.trust ? { trusted: true } : {})}
     />,
     { stdout: createFullscreenStdout(process.stdout) },
   );

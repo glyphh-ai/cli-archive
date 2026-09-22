@@ -28,6 +28,8 @@ export interface Prefs {
   theme?: string;
   /** The last prompts typed, oldest first (↑ recalls them). */
   history?: string[];
+  /** Folders the user said they trust the files in (the first-run question). */
+  trustedFolders?: string[];
 }
 
 /** How many prompts the history keeps. */
@@ -44,6 +46,7 @@ export function readPrefs(): Prefs {
     if (typeof raw.model === "string" && raw.model) out.model = raw.model;
     if (typeof raw.theme === "string") out.theme = raw.theme;
     if (Array.isArray(raw.history)) out.history = raw.history.filter((h): h is string => typeof h === "string").slice(-HISTORY_MAX);
+    if (Array.isArray(raw.trustedFolders)) out.trustedFolders = raw.trustedFolders.filter((f): f is string => typeof f === "string");
     return out;
   } catch {
     return {};
@@ -74,4 +77,16 @@ export function rememberPrompt(text: string): string[] {
   const next = cur[cur.length - 1] === text ? cur : [...cur, text].slice(-HISTORY_MAX);
   writePrefs({ history: next });
   return next;
+}
+
+/** Is this folder one the user trusts? Exact, or under a trusted parent. */
+export function folderTrusted(folder: string): boolean {
+  const list = readPrefs().trustedFolders ?? [];
+  return list.some((t) => folder === t || folder.startsWith(t.endsWith("/") ? t : `${t}/`));
+}
+
+/** Remember a trusted folder. */
+export function trustFolder(folder: string): void {
+  const list = readPrefs().trustedFolders ?? [];
+  if (!list.includes(folder)) writePrefs({ trustedFolders: [...list, folder] });
 }

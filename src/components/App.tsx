@@ -28,7 +28,7 @@ import { Box, Text, measureElement, useApp, useInput, useStdout, type DOMElement
 import type { Client } from "@glyphh/sdk";
 import { runLoopTurn, type ApprovalRequest } from "../loop.js";
 import { defaultModel } from "../models.js";
-import { readPrefs, writePrefs, rememberPrompt } from "../prefs.js";
+import { readPrefs, writePrefs, rememberPrompt, folderTrusted, trustFolder } from "../prefs.js";
 import { LOGO_MARK } from "../banner.js";
 import { InputBar } from "./InputBar.js";
 import { Footer, type FooterSlot } from "./Footer.js";
@@ -142,12 +142,18 @@ export interface AppProps {
   resumeId?: string;
   /** `--continue`: open the most recent Glyphh-loop chat. */
   continueLast?: boolean;
+  /** `--trust`: the folder question is already answered. */
+  trusted?: boolean;
 }
 
 /** Launched by the desktop's terminal card: the store's current chat follows us. */
 const LAUNCHED_BY_DESKTOP = !!process.env.GLYPHH_APP_SESSIONS;
+/** THE REAL FOLDER, absolute. The `cwd` prop is for display (HOME collapsed to
+ *  "~"); a display path leaked into a stored chat once and the desktop then
+ *  ran `cd "~"`, which no shell expands (his report, 2026-09-21). */
+const REAL_CWD = process.cwd();
 
-export function App({ client, version, server, cwd, initialAccount, onRelogin, bridgeUrl, initialModel, initialMode, initialPrompt, resumeId, continueLast }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, initialAccount, onRelogin, bridgeUrl, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -177,7 +183,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
   /** Slash menu selection while the line starts with "/". */
   const [slashSel, setSlashSel] = useState(0);
   /** The shared store's chat this transcript IS. */
-  const [chat, setChat] = useState<StoredChat>(() => newChat(cwd, initialMode ?? readPrefs().permissionMode ?? "default"));
+  const [chat, setChat] = useState<StoredChat>(() => newChat(REAL_CWD, initialMode ?? readPrefs().permissionMode ?? "default"));
   const [, setThemeVersion] = useState(0);
 
   const nextId = useRef(0);
@@ -325,6 +331,30 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     setPending({ kind: "picker", spec, selected: cur });
   }, []);
 
+  // THE FOLDER QUESTION (his order, 2026-09-21: "do what the others do"): the
+  // loop's tools read, write and run in this folder, so the first visit asks.
+  // The desktop's terminal card passes --trust (the folder was chosen in-app).
+  const askedTrust = useRef(false);
+  useEffect(() => {
+    if (askedTrust.current || trusted || folderTrusted(REAL_CWD)) return;
+    askedTrust.current = true;
+    openPicker({
+      title: "Do you trust the files in this folder?",
+      description: `${REAL_CWD} — the Glyphh loop can read, edit and run what is here. Trust only folders whose contents you know.`,
+      options: [
+        { id: "yes", label: "Yes, and remember this folder", detail: "no question next time here" },
+        { id: "once", label: "Yes, this session only" },
+        { id: "no", label: "No, exit", detail: "esc" },
+      ],
+      enterLabel: "choose",
+      onPick: (id) => {
+        if (id === "yes") trustFolder(REAL_CWD);
+        else if (id === "no") exit();
+      },
+      onCancel: () => exit(),
+    });
+  }, [trusted, openPicker, exit]);
+
   const runTurn = useCallback(
     async (prompt: string) => {
       const startedAt = Date.now();
@@ -459,7 +489,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
             title: c.messages.length ? c.title : titleOf(prompt),
             messages: [...c.messages, { role: "user", text: prompt, at: startedAt }, { role: "assistant", text: text || "…", at: now }],
             updatedAt: now,
-            workdir: c.workdir ?? cwd,
+            workdir: c.workdir ?? REAL_CWD,
             permission: desktopPermission(modeRef.current),
           };
           setChat(next);
@@ -510,7 +540,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
         setTheme,
         clearChat: () => {
           history.current = [];
-          const fresh = newChat(cwd, modeRef.current);
+          const fresh = newChat(REAL_CWD, modeRef.current);
           setChat(fresh);
           chatRef.current = fresh;
           setItems([]);
