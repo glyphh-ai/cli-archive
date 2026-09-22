@@ -17,6 +17,7 @@ import { readPrefs, writePrefs } from "../prefs.js";
 import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { resetLoop } from "../loop.js";
+import { diag } from "../diag.js";
 import { startMachineHost, stopMachineHost } from "../machine-host.js";
 import type { PermissionMode } from "../types.js";
 
@@ -63,10 +64,11 @@ export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initia
     let cancelled = false;
     void loadAccount(client).then((a) => {
       if (cancelled) return;
+      diag("account", { signedIn: !!a, email: a?.email ?? null });
       setAccount(a);
       if (a) startMachineHost(client, server, version);
       setPhase(a ? afterAuth() : "login");
-    });
+    }).catch((err: unknown) => { diag("account-error", { message: err instanceof Error ? err.message : String(err) }); if (!cancelled) setPhase("login"); });
     return () => {
       cancelled = true;
     };

@@ -60,9 +60,10 @@ export function diffWrites(shown: readonly string[], rows: readonly string[], he
  * Wrap the real stdout for Ink. `rows`/`columns`/`on("resize")` pass through;
  * `write` is the diff.
  */
-export function createFullscreenStdout(real: NodeJS.WriteStream): FullscreenStream {
+export function createFullscreenStdout(real: NodeJS.WriteStream, onFirstPaint?: () => void): FullscreenStream {
   let shown: string[] = [];
   let dirty = true; // first frame paints everything
+  let painted = false;
 
   const emit = (s: string): boolean => real.write(s);
 
@@ -72,6 +73,7 @@ export function createFullscreenStdout(real: NodeJS.WriteStream): FullscreenStre
     emit(diffWrites(shown, rows, height, dirty));
     dirty = false;
     shown = rows.slice(0, height);
+    if (!painted) { painted = true; onFirstPaint?.(); }
   };
 
   const write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {

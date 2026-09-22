@@ -30,6 +30,7 @@ import { runLoopTurn, type ApprovalRequest } from "../loop.js";
 import { defaultModel } from "../models.js";
 import { readPrefs, writePrefs, rememberPrompt, folderTrusted, trustFolder } from "../prefs.js";
 import { LOGO_MARK } from "../banner.js";
+import { diag } from "../diag.js";
 import { InputBar } from "./InputBar.js";
 import { Footer, type FooterSlot } from "./Footer.js";
 import { SubFooter } from "./SubFooter.js";
@@ -322,6 +323,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     if (opened.current || !sessionsFile) return;
     opened.current = true;
     const target = resumeId ? findChat(sessionsFile, resumeId) : continueLast ? listGlyphhChats(sessionsFile, 1)[0] ?? null : null;
+    diag("resume", { resumeId: resumeId ?? null, continueLast: !!continueLast, found: !!target, store: sessionsFile });
     if (target) showChat(target);
     else if (resumeId) push({ kind: "note", text: `no conversation ${resumeId} in this account's store — starting fresh` });
   }, [sessionsFile, resumeId, continueLast, showChat, push]);
@@ -359,6 +361,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
     async (prompt: string) => {
       const startedAt = Date.now();
       turnStartedAt.current = startedAt;
+      diag("turn-start", { chatId: chatRef.current.id, permission: modeRef.current });
       setElapsed(0);
       setScroll(0); // a new turn follows the tail
       const v = VERBS[nextId.current % VERBS.length]!;
@@ -497,6 +500,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
           if (sessionsFile) saveChat(sessionsFile, next, { current: LAUNCHED_BY_DESKTOP });
         }
         turn.durationMs = Date.now() - startedAt;
+        diag("turn-end", { status: turn.status, ms: turn.durationMs, up: turn.tokensUp, down: turn.tokensDown });
         setLast({ ...turn });
         cost.current.turns++;
         cost.current.tokensUp += turn.tokensUp;
