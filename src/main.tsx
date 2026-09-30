@@ -15,6 +15,7 @@
 
 import "./env.js"; // MUST be first — loads .env before anything reads the environment
 import { homedir } from "node:os";
+import { createRequire } from "node:module";
 import { render } from "ink";
 import { Boot } from "./components/Boot.js";
 import { makeClient, serverUrl } from "./glyphh.js";
@@ -22,7 +23,9 @@ import { parseFlags } from "./flags.js";
 import { createFullscreenStdout } from "./render/fullscreen.js";
 import { diag, logPath, trimLog } from "./diag.js";
 
-const VERSION = process.env.npm_package_version ?? "1.0.0";
+// The package's own version, read from the package.json that ships beside dist/
+// (npm_package_version is only set under `npm run`, so an installed CLI read "1.0.0").
+const VERSION = String((createRequire(import.meta.url)("../package.json") as { version?: string }).version ?? "0.0.0");
 
 /** The working directory, with $HOME collapsed to `~`. */
 function displayCwd(): string {
