@@ -131,8 +131,6 @@ export interface AppProps {
   initialAccount?: Account | null;
   /** Drop back to the interactive login screen — /login reuses the boot flow. */
   onRelogin?: () => void;
-  /** `--bridge`: this TUI fronts the Glyphh bridge at this URL (Claude Desktop's gateway and issuer). */
-  bridgeUrl?: string;
   /** `--model`: the gateway model this session runs on (a session pick, not persisted). */
   initialModel?: string;
   /** `--permission`: the chip to start on, for this launch. */
@@ -154,7 +152,7 @@ const LAUNCHED_BY_DESKTOP = !!process.env.GLYPHH_APP_SESSIONS;
  *  ran `cd "~"`, which no shell expands (his report, 2026-09-21). */
 const REAL_CWD = process.cwd();
 
-export function App({ client, version, server, cwd, initialAccount, onRelogin, bridgeUrl, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, initialAccount, onRelogin, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -602,7 +600,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
       model: effectiveModel,
       server: server.replace(/^https?:\/\//, ""),
       tips: items.length ? [] : TIPS,
-      notes: bridgeUrl ? [`bridge mode · Claude Desktop → ${bridgeUrl}`, ...RELEASE_NOTES.slice(0, 2)] : RELEASE_NOTES,
+      notes: RELEASE_NOTES,
     }));
     for (const item of items) {
       if (item.kind === "user") out.push(...userLines(item.text, width));
@@ -612,7 +610,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, b
       else if (item.kind === "note") out.push(...noteLines(item.text));
     }
     return out;
-  }, [items, expanded, width, version, account, cwd, server, bridgeUrl, effectiveModel]);
+  }, [items, expanded, width, version, account, cwd, server, effectiveModel]);
 
   // FULL HEIGHT. The renderer (render/fullscreen.ts) repaints only changed rows,
   // so a frame the size of the terminal is fine; the last row stays free for

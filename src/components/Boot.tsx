@@ -29,8 +29,6 @@ export interface BootProps {
   /** The late-bound box main.tsx gave the client's onSignedOut — Boot registers the
    *  reaction here: when the refresh chain dies MID-SESSION, drop to the login gate. */
   authLost?: { handler?: () => void };
-  /** `--bridge` — the bridge URL Claude Desktop points at, shown in the banner. */
-  bridgeUrl?: string;
   /** `--model` — the gateway model this session runs on. */
   initialModel?: string;
   /** `--permission` — the permission chip to start on. */
@@ -46,7 +44,7 @@ export interface BootProps {
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, authLost, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -132,7 +130,6 @@ export function Boot({ client, version, server, cwd, authLost, bridgeUrl, initia
       cwd={cwd}
       initialAccount={account}
       onRelogin={onRelogin}
-      {...(bridgeUrl ? { bridgeUrl } : {})}
       {...(initialModel ? { initialModel } : {})}
       {...(initialMode ? { initialMode } : {})}
       {...(initialPrompt && epoch === 0 ? { initialPrompt } : {})}

@@ -10,7 +10,6 @@
  *   --model <id>                     the gateway model this session runs on
  *   --permission default|acceptEdits|plan|bypass   the permission chip
  *   --resume <chatId> | --continue   open a conversation from the shared store
- *   --bridge                         Bridge Mode banner (app/docs/BRIDGE-MODE.md §9)
  */
 
 import "./env.js"; // MUST be first — loads .env before anything reads the environment
@@ -82,7 +81,6 @@ function main(): void {
       server={serverUrl()}
       cwd={displayCwd()}
       authLost={authLost}
-      {...(flags.bridgeUrl ? { bridgeUrl: flags.bridgeUrl } : {})}
       {...(flags.model ? { initialModel: flags.model } : {})}
       {...(flags.permission ? { initialMode: flags.permission } : {})}
       {...(flags.prompt ? { initialPrompt: flags.prompt } : {})}
