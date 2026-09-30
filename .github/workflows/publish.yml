@@ -3,14 +3,13 @@ name: Publish
 # How anyone installs the CLI: `npm i -g @glyphh-ai/cli`. A tag `v*` publishes
 # the package at the version in package.json.
 #
-# package.json depends on `@glyphh/sdk: file:../sdk`, a sibling checkout that
-# exists on a developer's machine and nowhere else. Publishing that verbatim
-# would ship a package nobody can install, so this job vendors the SDK the way
-# the desktop's build does (so `npm ci` resolves), builds and tests, and then
-# rewrites the dependency to the SDK's published version before `npm publish`.
-# The SDK must already be on the registry at that version (sdk's Publish
-# workflow). Needs the NPM_TOKEN secret (an npm automation token for the
-# @glyphh-ai scope) and a token that can read glyphh-ai/sdk.
+# The SDK is BUNDLED into dist/main.js (esbuild, `npm run build`), so the
+# published package has no @glyphh/sdk dependency and the SDK never has to be on
+# the registry. `@glyphh/sdk: file:../sdk` is a devDependency, a sibling checkout
+# that exists on a developer's machine and nowhere else: this job clones and
+# builds it the way the desktop's build does, so `npm ci` and the bundle resolve.
+# Needs the NPM_TOKEN secret (an npm automation token for the @glyphh-ai scope)
+# and a token that can read glyphh-ai/sdk.
 
 on:
   push:
@@ -44,7 +43,6 @@ jobs:
           rm -rf ../sdk && mkdir -p ../sdk
           cp .sdk-src/package.json ../sdk/package.json
           cp -R .sdk-src/dist ../sdk/dist
-          echo "SDK_VERSION=$(node -p "require('./.sdk-src/package.json').version")" >> "$GITHUB_ENV"
           rm -rf .sdk-src
 
       - run: npm ci
@@ -56,10 +54,10 @@ jobs:
           v="$(node -p "require('./package.json').version")"
           [ "${GITHUB_REF_NAME}" = "v${v}" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || { echo "tag ${GITHUB_REF_NAME} is not v${v}"; exit 1; }
 
-      - name: Depend on the published SDK, not the sibling folder
+      - name: The SDK is inside the bundle, not a dependency
         run: |
-          npm pkg set "dependencies.@glyphh/sdk=^${SDK_VERSION}"
-          npm view "@glyphh/sdk@${SDK_VERSION}" version >/dev/null || { echo "@glyphh/sdk@${SDK_VERSION} is not on the registry; publish the SDK first"; exit 1; }
+          if grep -qE 'from "@glyphh/sdk|import\("@glyphh/sdk' dist/main.js; then echo "dist/main.js still imports @glyphh/sdk"; exit 1; fi
+          node -e "const p=require('./package.json'); if ((p.dependencies||{})['@glyphh/sdk']) { console.error('@glyphh/sdk must not be a runtime dependency'); process.exit(1) }"
 
       - run: npm publish --access public --provenance
         env:

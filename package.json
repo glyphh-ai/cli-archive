@@ -1,7 +1,7 @@
 {
   "name": "@glyphh-ai/cli",
   "version": "1.1.2",
-  "description": "Glyphh — the full-screen agent TUI. The desktop coding agent, in your terminal.",
+  "description": "Glyphh \u2014 the full-screen agent TUI. The desktop coding agent, in your terminal.",
   "license": "LicenseRef-Proprietary",
   "type": "module",
   "bin": {
@@ -22,21 +22,22 @@
   },
   "scripts": {
     "dev": "tsx src/main.tsx",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json --noEmit && rm -rf dist && esbuild src/main.tsx --bundle --platform=node --format=esm --target=node20 --jsx=automatic --outfile=dist/main.js --sourcemap --external:ink --external:ink-spinner --external:react",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "verify": "npm run typecheck && npm run test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@glyphh/sdk": "file:../sdk",
     "ink": "^5.0.1",
     "ink-spinner": "^5.0.0",
     "react": "^18.3.1"
   },
   "devDependencies": {
+    "@glyphh/sdk": "file:../sdk",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.3",
+    "esbuild": "^0.28.1",
     "ink-testing-library": "^4.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
