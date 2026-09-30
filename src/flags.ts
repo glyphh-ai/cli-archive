@@ -17,9 +17,11 @@ export interface Flags {
   continueLast?: boolean;
   /** `--trust`: this folder is trusted — skip the question (the desktop chose it). */
   trust?: boolean;
+  /** `glyphh remote-control`: start with remote control on for this folder. */
+  remoteControl?: boolean;
 }
 
-export const USAGE = "usage: glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--resume <chatId> | --continue] [--trust] [prompt…]";
+export const USAGE = "usage: glyphh [remote-control] [--model <id>] [--permission default|acceptEdits|plan|bypass] [--resume <chatId> | --continue] [--trust] [prompt…]";
 
 /** The permission words every Glyphh surface uses → this TUI's chip. */
 export function permissionFlag(raw: string): PermissionMode | undefined {
@@ -45,6 +47,8 @@ export function parseFlags(argv: string[]): Flags {
       process.stderr.write(`glyphh: unknown flag ${a}\n${USAGE}\n`);
       process.exit(2);
     }
+    // `glyphh remote-control` — a subcommand only as the FIRST word; later it is prose.
+    if (a === "remote-control" && words.length === 0 && !out.remoteControl) { out.remoteControl = true; continue; }
     words.push(a);
   }
   const prompt = words.join(" ").trim();

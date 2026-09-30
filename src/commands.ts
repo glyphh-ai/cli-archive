@@ -14,6 +14,7 @@ import { compactChat, toolsFor } from "./loop.js";
 import { availableModels, defaultModel, type ModelChoice } from "./models.js";
 import { openBrowser } from "./open-browser.js";
 import { readPrefs } from "./prefs.js";
+import { remoteControlState } from "./remote-control.js";
 import { agoLabel, listGlyphhChats, touchedAt } from "./sessions.js";
 import { THEMES, DEFAULT_THEME } from "./theme.js";
 import { PERMISSION_LABEL, PERMISSION_MODES, permissionModeOf, type PermissionMode } from "./types.js";
@@ -61,6 +62,8 @@ export interface CommandCtx {
   sessionsFile: string | null;
   /** Swap the transcript for a stored chat, in place. */
   resumeChat: (id: string) => Promise<string[]>;
+  /** Remote control on/off for this folder; resolves with what to tell the person. */
+  setRemoteControl: (on: boolean) => Promise<string>;
 }
 
 export interface SlashCommand {
@@ -305,6 +308,23 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: "remote-control",
+    aliases: ["rc"],
+    summary: "let mobile.glyphh.ai run turns in this folder: /remote-control on|off",
+    usage: "/remote-control [on|off]",
+    async run(ctx, args) {
+      const want = (args[0] ?? "").toLowerCase();
+      const st = remoteControlState();
+      if (!want) {
+        return st.on
+          ? [`remote control is on · ${st.folders.join(", ")}`, "turn it off: /remote-control off"]
+          : ["remote control is off", `turn it on for ${ctx.cwd}: /remote-control on`];
+      }
+      if (want !== "on" && want !== "off") return ["usage: /remote-control on|off"];
+      return [await ctx.setRemoteControl(want === "on")];
+    },
+  },
+  {
     name: "status",
     aliases: ["whoami"],
     summary: "account, plan, model, permissions, folder and server",
@@ -314,6 +334,7 @@ const COMMANDS: SlashCommand[] = [
         a ? `signed in as ${a.email} · plan ${planLabel(a.tier)}` : "not signed in · /login",
         `model ${ctx.model ?? "the org's default"} · permissions ${ctx.permission}`,
         `folder ${ctx.cwd}`,
+        `remote control ${remoteControlState().on ? "on" : "off"}`,
         `server ${ctx.server.replace(/^https?:\/\//, "")} · glyphh ${ctx.version}`,
       ];
     },

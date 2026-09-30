@@ -10,6 +10,7 @@
  *   --model <id>                     the gateway model this session runs on
  *   --permission default|acceptEdits|plan|bypass   the permission chip
  *   --resume <chatId> | --continue   open a conversation from the shared store
+ *   remote-control                   start with remote control on for this folder
  */
 
 import "./env.js"; // MUST be first — loads .env before anything reads the environment
@@ -87,6 +88,7 @@ function main(): void {
       {...(flags.resume ? { resumeId: flags.resume } : {})}
       {...(flags.continueLast ? { continueLast: true } : {})}
       {...(flags.trust ? { trusted: true } : {})}
+      {...(flags.remoteControl ? { remoteControl: true } : {})}
     />,
     { stdout: createFullscreenStdout(process.stdout, () => diag("first-frame")) },
   );

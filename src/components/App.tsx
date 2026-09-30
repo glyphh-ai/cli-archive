@@ -41,6 +41,7 @@ import { theme, applyTheme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { runSlash, matchCommands, RELEASE_NOTES, TIPS, type CommandCtx, type SessionCost } from "../commands.js";
 import { conversationOf, findChat, listGlyphhChats, newChat, saveChat, storeFile, titleOf, desktopPermission, type StoredChat } from "../sessions.js";
+import { remoteControlOff, remoteControlOn } from "../remote-control.js";
 import { headerLines,
   answerLines,
   commandLines,
@@ -143,6 +144,8 @@ export interface AppProps {
   continueLast?: boolean;
   /** `--trust`: the folder question is already answered. */
   trusted?: boolean;
+  /** `glyphh remote-control`: turn remote control on for this folder once signed in. */
+  remoteControl?: boolean;
 }
 
 /** Launched by the desktop's terminal card: the store's current chat follows us. */
@@ -152,7 +155,7 @@ const LAUNCHED_BY_DESKTOP = !!process.env.GLYPHH_APP_SESSIONS;
  *  ran `cd "~"`, which no shell expands (his report, 2026-09-21). */
 const REAL_CWD = process.cwd();
 
-export function App({ client, version, server, cwd, initialAccount, onRelogin, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, initialAccount, onRelogin, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -209,6 +212,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionsFile = account ? storeFile(account.userId) : null;
 
+
   useEffect(() => {
     const onResize = () => {
       setCols(stdout.columns || 80);
@@ -253,6 +257,27 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
     setItems((l) => [...l, { ...item, id } as Item]);
     return id;
   }, []);
+
+  /** Remote control on/off for THIS folder — the words to show the person. */
+  const setRemoteControl = useCallback(async (on: boolean): Promise<string> => {
+    if (!on) return remoteControlOff() ? "remote control off · this machine is no longer reachable from mobile" : "remote control is already off";
+    if (!sessionsFile) return "sign in first — remote control runs on your account";
+    const r = await remoteControlOn({
+      client, server, version, sessionsFile, folder: REAL_CWD,
+      onRefused: (reason) => push({ kind: "note", text: `remote control stopped · ${reason}` }),
+    });
+    return r.message;
+  }, [client, server, version, sessionsFile, push]);
+
+  // `glyphh remote-control`: on once, as soon as there is an account to attach as.
+  const remoteStarted = useRef(false);
+  useEffect(() => {
+    if (!remoteControl || remoteStarted.current || !sessionsFile) return;
+    remoteStarted.current = true;
+    void setRemoteControl(true).then((text) => push({ kind: "note", text }));
+  }, [remoteControl, sessionsFile, setRemoteControl, push]);
+  // Leaving the chat (quit, re-auth) takes the attachment with it.
+  useEffect(() => () => { remoteControlOff(); }, []);
 
   const patchItem = useCallback((id: string, fn: (item: Item) => Item) => {
     setItems((l) => l.map((it) => (it.id === id ? fn(it) : it)));
@@ -557,11 +582,12 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
         openPicker,
         sessionsFile,
         resumeChat,
+        setRemoteControl,
       };
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setTheme, version, onRelogin, sessionModel, pickedModel, openPicker, sessionsFile, resumeChat],
+    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setTheme, version, onRelogin, sessionModel, pickedModel, openPicker, sessionsFile, resumeChat, setRemoteControl],
   );
 
   const submit = useCallback(() => {

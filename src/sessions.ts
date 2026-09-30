@@ -92,6 +92,70 @@ export function saveChat(file: string, chat: StoredChat, opts: { current?: boole
   }
 }
 
+function writeStore(file: string, snap: Snapshot): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(snap), "utf-8");
+}
+
+/** Append ONE message to a chat, making the chat when a remote turn is its first
+ *  (remote control, 2026-09-30). A repeat of the last message is not written twice. */
+export function appendMessage(file: string, chatId: string, msg: { role: "user" | "assistant"; text: string }, seed: { workdir?: string; mode?: "work" | "code" } = {}): void {
+  const text = msg.text.trim();
+  if (!chatId || !text) return;
+  try {
+    const have = loadStore(file);
+    const now = Date.now();
+    let chat = have.chats.find((c) => c.id === chatId);
+    if (!chat) {
+      chat = {
+        id: chatId, title: titleOf(msg.role === "user" ? text : ""), createdAt: now, updatedAt: now, messages: [], loop: "glyphh",
+        mode: seed.mode === "work" ? "chat" : "code",
+        ...(seed.workdir ? { workdir: seed.workdir, source: { kind: "local", path: seed.workdir } } : {}),
+      };
+      have.chats.unshift(chat);
+    } else if (seed.workdir && !chat.workdir) {
+      chat.workdir = seed.workdir;
+      chat.source = { kind: "local", path: seed.workdir };
+    }
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && last.role === msg.role && last.text.trim() === text) return;
+    chat.messages.push({ role: msg.role, text, at: now });
+    chat.updatedAt = now;
+    writeStore(file, have);
+  } catch {
+    /* a failed save loses the shared recents entry, never the run */
+  }
+}
+
+/** Name a chat (or make an empty one): the phone's rename and its first-send stamp. */
+export function putChat(file: string, chatId: string, patch: { title?: string; workdir?: string; mode?: "work" | "code" }): StoredChat {
+  const have = loadStore(file);
+  const now = Date.now();
+  let chat = have.chats.find((c) => c.id === chatId);
+  if (!chat) {
+    chat = {
+      id: chatId, title: patch.title?.trim() || "New session", createdAt: now, updatedAt: now, messages: [], loop: "glyphh",
+      mode: patch.mode === "work" ? "chat" : "code",
+      ...(patch.workdir ? { workdir: patch.workdir, source: { kind: "local", path: patch.workdir } } : {}),
+    };
+    have.chats.unshift(chat);
+  } else {
+    if (patch.title?.trim()) chat.title = patch.title.trim();
+    if (patch.workdir && !chat.workdir) { chat.workdir = patch.workdir; chat.source = { kind: "local", path: patch.workdir }; }
+    chat.updatedAt = now;
+  }
+  writeStore(file, have);
+  return chat;
+}
+
+export function deleteChat(file: string, chatId: string): boolean {
+  const have = loadStore(file);
+  const chats = have.chats.filter((c) => c.id !== chatId);
+  if (chats.length === have.chats.length) return false;
+  writeStore(file, { chats, currentId: have.currentId === chatId ? null : have.currentId });
+  return true;
+}
+
 /** A chat id in the desktop's own style (client-minted, sortable). */
 export const mintChatId = (): string => `c${Date.now().toString(36)}`;
 

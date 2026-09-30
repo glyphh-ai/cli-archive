@@ -18,7 +18,7 @@ import { applyTheme, theme } from "../theme.js";
 import { loadAccount, type Account } from "../glyphh.js";
 import { resetLoop } from "../loop.js";
 import { diag } from "../diag.js";
-import { startMachineHost, stopMachineHost } from "../machine-host.js";
+import { remoteControlOff } from "../remote-control.js";
 import type { PermissionMode } from "../types.js";
 
 export interface BootProps {
@@ -40,11 +40,13 @@ export interface BootProps {
   continueLast?: boolean;
   /** `--trust`: the folder question is already answered (the desktop chose it). */
   trusted?: boolean;
+  /** `glyphh remote-control` — the chat starts with remote control on. */
+  remoteControl?: boolean;
 }
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, authLost, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, authLost, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -64,20 +66,19 @@ export function Boot({ client, version, server, cwd, authLost, initialModel, ini
       if (cancelled) return;
       diag("account", { signedIn: !!a, email: a?.email ?? null });
       setAccount(a);
-      if (a) startMachineHost(client, server, version);
       setPhase(a ? afterAuth() : "login");
     }).catch((err: unknown) => { diag("account-error", { message: err instanceof Error ? err.message : String(err) }); if (!cancelled) setPhase("login"); });
     return () => {
       cancelled = true;
     };
-  }, [client, afterAuth, server, version]);
+  }, [client, afterAuth]);
 
   // Session death (expired/revoked refresh) → the login gate, from anywhere.
   useEffect(() => {
     if (!authLost) return;
     authLost.handler = () => {
       resetLoop(); // the conversations and the gateway credential died with the session
-      stopMachineHost();
+      remoteControlOff(); // a dead session attaches nothing
       setAccount(null);
       setPhase("login");
     };
@@ -90,17 +91,16 @@ export function Boot({ client, version, server, cwd, authLost, initialModel, ini
     resetLoop(); // fresh session → a fresh credential on the next turn
     void loadAccount(client).then((a) => {
       setAccount(a);
-      if (a) startMachineHost(client, server, version);
       setEpoch((e) => e + 1);
       setPhase(afterAuth());
     });
-  }, [client, afterAuth, server, version]);
+  }, [client, afterAuth]);
 
   // /login (user-initiated) → the same login gate a dead session drops to. On
   // success onAuthed bumps the epoch, so the App remounts on the fresh session.
   const onRelogin = useCallback(() => {
     resetLoop();
-    stopMachineHost();
+    remoteControlOff();
     setAccount(null);
     setPhase("login");
   }, []);
@@ -136,6 +136,7 @@ export function Boot({ client, version, server, cwd, authLost, initialModel, ini
       {...(resumeId ? { resumeId } : {})}
       {...(continueLast ? { continueLast } : {})}
       {...(trusted ? { trusted } : {})}
+      {...(remoteControl ? { remoteControl } : {})}
     />
   );
 }
