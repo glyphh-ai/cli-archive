@@ -27,6 +27,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Client } from "@glyphh/sdk";
 import type { LoopEmit, LoopPermission } from "@glyphh/sdk/loop";
 import { startAttachHost, type AttachHandler, type AttachHost } from "@glyphh/sdk/runtime";
+import { adaDevice, adaHandlers } from "./ada.js";
 import { engineFor, type LoopEngine } from "./loop.js";
 import { defaultModel } from "./models.js";
 import { appendMessage, conversationOf, deleteChat, findChat, loadStore, putChat, touchedAt, type StoredChat } from "./sessions.js";
@@ -59,14 +60,18 @@ export async function remoteControlOn(opts: RemoteControlOptions): Promise<{ ok:
   if (st && st.allowed === false) return { ok: false, message: "remote control is off for your organization — an org admin can turn it on in the console" };
   remoteControlOff();
   granted = [realOr(resolve(opts.folder))];
+  // A registered Ada device keeps serving its records on the same socket.
+  const ada = await adaHandlers().catch(() => ({}));
+  const device = adaDevice()?.device_id;
   host = (opts.start ?? startAttachHost)({
     client: opts.client,
     server: opts.server,
     app: "glyphh-cli",
     version: opts.version,
     name: hostname(),
-    handlers: remoteHandlers({ ...opts, folders: () => granted, push: (channel, data) => { host?.push(channel, data); } }),
+    handlers: { ...remoteHandlers({ ...opts, folders: () => granted, push: (channel, data) => { host?.push(channel, data); } }), ...ada },
     folders: () => granted,
+    ...(device ? { adaDevice: () => device } : {}),
     onRefused: (reason) => { host = null; granted = []; opts.onRefused?.(reason); },
   });
   return { ok: true, message: `remote control on · mobile.glyphh.ai can run turns in ${granted[0]}` };

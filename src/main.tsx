@@ -11,6 +11,7 @@
  *   --permission default|acceptEdits|plan|bypass   the permission chip
  *   --resume <chatId> | --continue   open a conversation from the shared store
  *   remote-control                   start with remote control on for this folder
+ *   ada register [name] | ada host   this machine as an Ada device (ada.ts), no TUI
  */
 
 import "./env.js"; // MUST be first — loads .env before anything reads the environment
@@ -44,9 +45,39 @@ function leaveScreen(): void {
   process.stdout.write("\x1b[?25h\x1b[?1007h\x1b[?1049l");
 }
 
+/** `glyphh ada …`: headless, on the session `glyphh` signed in with. */
+async function adaCommand(args: string[]): Promise<number> {
+  const { hostAda, registerAdaDevice } = await import("./ada.js");
+  const client = makeClient({ onSignedOut: () => undefined });
+  const [verb, ...rest] = args;
+  try {
+    if (verb === "register") {
+      const dev = await registerAdaDevice(client, rest.join(" ").trim() || undefined);
+      process.stdout.write(`this machine is Ada device ${dev.device_id} (${dev.name})\nan org admin can now create a local model on it; serve it with: glyphh ada host\n`);
+      return 0;
+    }
+    if (verb === "host") {
+      const host = await hostAda({ client, server: serverUrl(), version: VERSION });
+      process.stdout.write("serving this machine's Ada records · ctrl-c to stop\n");
+      await new Promise<void>((done) => process.once("SIGINT", () => { host.stop(); done(); }));
+      return 0;
+    }
+  } catch (e) {
+    process.stderr.write(`glyphh ada: ${e instanceof Error ? e.message : String(e)}\nsign in first by running glyphh\n`);
+    return 1;
+  }
+  process.stderr.write("usage: glyphh ada register [name] | glyphh ada host\n");
+  return 2;
+}
+
 function main(): void {
   trimLog();
-  const flags = parseFlags(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === "ada") {
+    void adaCommand(argv.slice(1)).then((code) => process.exit(code));
+    return;
+  }
+  const flags = parseFlags(argv);
   diag("boot", {
     version: VERSION, argv: process.argv.slice(2), cwd: process.cwd(), server: serverUrl(),
     tty: { out: !!process.stdout.isTTY, in: !!process.stdin.isTTY, rows: process.stdout.rows, cols: process.stdout.columns },
