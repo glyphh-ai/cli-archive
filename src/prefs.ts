@@ -2,14 +2,15 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * prefs.ts — this device's TUI preferences (~/.glyphh/config.json, 0600): the
- * permission chip, the picked model, the theme, the prompt history. The
+ * permission chip, the picked model, the effort dial, the theme, the prompt
+ * history. The
  * `server` key belongs to the CLI profile and is preserved, never owned here.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { permissionModeOf, type PermissionMode } from "./types.js";
+import { effortOf, permissionModeOf, type Effort, type PermissionMode } from "./types.js";
 
 function home(): string {
   return process.env.GLYPHH_HOME ?? join(homedir(), ".glyphh");
@@ -24,6 +25,8 @@ export interface Prefs {
   permissionMode?: PermissionMode;
   /** The model turns run on (a gateway model name). Absent = the org's default. */
   model?: string;
+  /** The effort dial turns run at (/effort). Absent = medium. */
+  effort?: Effort;
   /** The chosen theme's name (see theme.ts). Absent = never picked → the picker runs. */
   theme?: string;
   /** The last prompts typed, oldest first (↑ recalls them). */
@@ -44,6 +47,8 @@ export function readPrefs(): Prefs {
     if (typeof raw.server === "string") out.server = raw.server;
     if (mode) out.permissionMode = mode;
     if (typeof raw.model === "string" && raw.model) out.model = raw.model;
+    const effort = effortOf(typeof raw.effort === "string" ? raw.effort : undefined);
+    if (effort) out.effort = effort;
     if (typeof raw.theme === "string") out.theme = raw.theme;
     if (Array.isArray(raw.history)) out.history = raw.history.filter((h): h is string => typeof h === "string").slice(-HISTORY_MAX);
     if (Array.isArray(raw.trustedFolders)) out.trustedFolders = raw.trustedFolders.filter((f): f is string => typeof f === "string");

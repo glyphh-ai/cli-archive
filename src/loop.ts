@@ -20,7 +20,7 @@
 
 import type { Client } from "@glyphh/sdk";
 import { GlyphhLoop, type LoopEmit, type LoopGateway, type LoopMcpServer, type LoopPermission, type LoopTurn } from "@glyphh/sdk/loop";
-import type { PermissionMode } from "./types.js";
+import type { Effort, PermissionMode } from "./types.js";
 
 /** A tool call as the transcript wants it. */
 export interface ToolDone {
@@ -40,6 +40,8 @@ export interface ApprovalRequest {
 export interface LoopTurnHandlers {
   /** Streamed answer text — append. */
   onDelta: (text: string) => void;
+  /** The model's thinking as it streams — a dim preview, never the transcript. */
+  onThinking?: (text: string) => void;
   /** A tool began. `title` names the work ("bash npm test"). */
   onToolStart: (name: string, title?: string) => void;
   /** A tool finished (with its capped preview / failure state). */
@@ -77,6 +79,8 @@ export interface LoopTurnOptions {
   cwd?: string;
   /** The TUI's permission chip. */
   permission: PermissionMode;
+  /** The effort dial (/effort, --effort). Absent = the model's default. */
+  effort?: Effort;
   /** Esc — aborts the run. */
   signal?: AbortSignal;
   /** Use THIS engine instead of the process's (tests). */
@@ -172,6 +176,9 @@ export async function runLoopTurn(opts: LoopTurnOptions, h: LoopTurnHandlers): P
           text += ev.delta;
           h.onDelta(ev.delta);
           return;
+        case "thinking":
+          h.onThinking?.(ev.text);
+          return;
         case "tool":
           if (ev.phase === "start") h.onToolStart(ev.name, ev.title);
           else h.onToolDone(ev.name, { failed: ev.failed, denied: ev.preview === "not permitted in this mode", preview: ev.preview });
@@ -213,6 +220,7 @@ export async function runLoopTurn(opts: LoopTurnOptions, h: LoopTurnHandlers): P
       text: opts.prompt,
       model: opts.model,
       permission: loopPermission(opts.permission),
+      ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.cwd ? { workdir: opts.cwd } : {}),
       history: opts.history.map((m) => ({ role: m.role, text: m.content })),
     }, emit);

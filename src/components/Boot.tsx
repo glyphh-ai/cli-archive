@@ -19,7 +19,7 @@ import { loadAccount, type Account } from "../glyphh.js";
 import { resetLoop } from "../loop.js";
 import { diag } from "../diag.js";
 import { remoteControlOff } from "../remote-control.js";
-import type { PermissionMode } from "../types.js";
+import type { Effort, PermissionMode } from "../types.js";
 
 export interface BootProps {
   client: Client;
@@ -31,6 +31,8 @@ export interface BootProps {
   authLost?: { handler?: () => void };
   /** `--model` — the gateway model this session runs on. */
   initialModel?: string;
+  /** `--effort` — the dial for this session. */
+  initialEffort?: Effort;
   /** `--permission` — the permission chip to start on. */
   initialMode?: PermissionMode;
   /** An opening prompt from the command line — sent once the chat is up. */
@@ -46,7 +48,7 @@ export interface BootProps {
 
 type Phase = "loading" | "login" | "theme" | "chat";
 
-export function Boot({ client, version, server, cwd, authLost, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: BootProps): React.ReactElement {
+export function Boot({ client, version, server, cwd, authLost, initialModel, initialEffort, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: BootProps): React.ReactElement {
   // Apply the saved theme once, synchronously on first render, so nothing paints in the
   // wrong palette. Chat/login/theme all read the same shared `theme` object.
   const [, force] = useState(0);
@@ -131,6 +133,7 @@ export function Boot({ client, version, server, cwd, authLost, initialModel, ini
       initialAccount={account}
       onRelogin={onRelogin}
       {...(initialModel ? { initialModel } : {})}
+      {...(initialEffort ? { initialEffort } : {})}
       {...(initialMode ? { initialMode } : {})}
       {...(initialPrompt && epoch === 0 ? { initialPrompt } : {})}
       {...(resumeId ? { resumeId } : {})}

@@ -2,7 +2,8 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * SubFooter.tsx — the status line above the composer: the spinner and the
- * running verb while a turn works, else the settle line (verb, duration, tokens).
+ * running verb while a turn works (with the model's thinking as one dim line
+ * beneath, until the answer starts), else the settle line (verb, duration, tokens).
  */
 
 import React from "react";
@@ -19,13 +20,25 @@ export interface SubFooterProps {
   last?: ChatTurn | undefined;
   /** This turn's working verb pair (✽ Verbing… / ✻ Verbed for Ns). */
   verb: { ing: string; past: string };
+  /** The model's thinking so far (a preview); absent = none, or the answer began. */
+  thinking?: string;
+}
+
+/** A thought as one line: whitespace folded, clipped to the width. */
+export function thinkingLine(text: string, width: number): string {
+  const head = "Thinking… ";
+  const room = Math.max(0, width - 2 - head.length);
+  const flat = text.replace(/\s+/g, " ").trim();
+  const chars = [...flat];
+  const body = chars.length <= room ? flat : `${chars.slice(0, Math.max(0, room - 1)).join("")}…`;
+  return `${head}${body}`;
 }
 
 /** The spinner's frames — stepped by the turn clock (4 fps), not a timer of
  *  its own: every frame is a full Ink redraw, so a fast spinner is a flicker. */
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps): React.ReactElement {
+export function SubFooter({ width, busy, elapsed, last, verb, thinking }: SubFooterProps): React.ReactElement {
   if (busy && last) {
     const burn = last.tokensUp + last.tokensDown > 0 ? ` · ${last.tokensUp}↑ ${last.tokensDown}↓ tok` : "";
     const frame = FRAMES[Math.floor(elapsed * 4) % FRAMES.length]!;
@@ -38,6 +51,7 @@ export function SubFooter({ width, busy, elapsed, last, verb }: SubFooterProps):
             ({elapsed.toFixed(1)}s{burn} · esc to stop)
           </Text>
         </Text>
+        {thinking ? <Text color={theme.faint} dimColor wrap="truncate-end">{thinkingLine(thinking, width)}</Text> : null}
       </Box>
     );
   }

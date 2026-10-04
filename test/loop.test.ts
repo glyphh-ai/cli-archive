@@ -8,10 +8,11 @@
  * stopping the run, and an error event settling the turn with its message.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { LoopEmit, LoopEvent, LoopTurn } from "@glyphh/sdk/loop";
 import { runLoopTurn, loopPermission, type LoopEngine, type LoopTurnHandlers } from "../src/loop.js";
 import { parseFlags, permissionFlag } from "../src/flags.js";
+import { EFFORTS, effortOf } from "../src/types.js";
 
 type Step = Parameters<LoopEmit>[0] | ((emit: LoopEmit, eng: FakeEngine) => void | Promise<void>);
 
@@ -43,10 +44,11 @@ class FakeEngine implements LoopEngine {
 const client = {} as never;
 const ev = (e: LoopEvent): LoopEvent & { runId: string } => ({ runId: "r1", ...e });
 
-function handlers(): LoopTurnHandlers & { deltas: string[]; starts: string[]; dones: Array<{ name: string; failed: boolean; denied: boolean }>; progress: Array<[number, number]>; notes: string[] } {
+function handlers(): LoopTurnHandlers & { deltas: string[]; thoughts: string[]; starts: string[]; dones: Array<{ name: string; failed: boolean; denied: boolean }>; progress: Array<[number, number]>; notes: string[] } {
   const h = {
-    deltas: [] as string[], starts: [] as string[], dones: [] as Array<{ name: string; failed: boolean; denied: boolean }>, progress: [] as Array<[number, number]>, notes: [] as string[],
+    deltas: [] as string[], thoughts: [] as string[], starts: [] as string[], dones: [] as Array<{ name: string; failed: boolean; denied: boolean }>, progress: [] as Array<[number, number]>, notes: [] as string[],
     onDelta: (t: string) => { h.deltas.push(t); },
+    onThinking: (t: string) => { h.thoughts.push(t); },
     onToolStart: (name: string) => { h.starts.push(name); },
     onToolDone: (name: string, r: { failed: boolean; denied: boolean }) => { h.dones.push({ name, failed: r.failed, denied: r.denied }); },
     onProgress: (up: number, down: number) => { h.progress.push([up, down]); },
@@ -141,6 +143,33 @@ describe("loopPermission", () => {
   });
 });
 
+describe("runLoopTurn — the effort dial", () => {
+  it("rides every turn to the engine, and the model's thinking reaches its own handler, never the answer", async () => {
+    const eng = new FakeEngine([
+      ev({ type: "thinking", chatId: "c1", text: "Let me " }), ev({ type: "thinking", chatId: "c1", text: "look." }),
+      ev({ type: "delta", delta: "Done." }),
+      ev({ type: "done", stopped: false }),
+    ]);
+    const h = handlers();
+    const r = await runLoopTurn({ ...base, engine: eng, effort: "xhigh" }, h);
+    expect(r).toEqual({ text: "Done.", stopped: false });
+    expect(h.thoughts).toEqual(["Let me ", "look."]);
+    expect(h.deltas).toEqual(["Done."]);
+    expect(eng.turn?.effort).toBe("xhigh");
+  });
+  it("is absent from the turn when the TUI set none (the model's default)", async () => {
+    const eng = new FakeEngine([ev({ type: "done", stopped: false })]);
+    await runLoopTurn({ ...base, engine: eng }, handlers());
+    expect(eng.turn).not.toHaveProperty("effort");
+  });
+  it("a thinking event with no handler is silently handled", async () => {
+    const eng = new FakeEngine([ev({ type: "thinking", chatId: "c1", text: "hm" }), ev({ type: "done", stopped: false })]);
+    const h = handlers();
+    delete (h as Partial<LoopTurnHandlers>).onThinking;
+    await expect(runLoopTurn({ ...base, engine: eng }, h)).resolves.toEqual({ text: "", stopped: false });
+  });
+});
+
 describe("flags", () => {
   it("parses the desktop's launch line and a person's prompt", () => {
     expect(parseFlags(["--model", "claude-sonnet-5", "--permission", "plan", "fix", "the", "tests"])).toEqual({ model: "claude-sonnet-5", permission: "plan", prompt: "fix the tests" });
@@ -157,5 +186,26 @@ describe("flags", () => {
     expect(parseFlags(["--permission", "nope"])).toEqual({});
     expect(parseFlags(["--dangerously-skip-permissions"])).toEqual({ permission: "bypass" });
     expect(parseFlags(["--trust", "--resume", "cmubx4a46", "--continue"])).toEqual({ trust: true, resume: "cmubx4a46", continueLast: true });
+  });
+  it("--effort takes the dial's five words, by word or by label", () => {
+    expect(parseFlags(["--effort", "high", "go"])).toEqual({ effort: "high", prompt: "go" });
+    expect(parseFlags(["--effort=max"])).toEqual({ effort: "max" });
+    expect(parseFlags(["--effort", "Ultra"])).toEqual({ effort: "max" });
+    expect(parseFlags(["--effort", "extra-high"])).toEqual({ effort: "xhigh" });
+    expect(EFFORTS).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(effortOf("nope")).toBeUndefined();
+  });
+  it("a bad --effort exits 2 and names the allowed list", () => {
+    const err: string[] = [];
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as never);
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(((s: string) => { err.push(String(s)); return true; }) as never);
+    try {
+      expect(() => parseFlags(["--effort", "extreme"])).toThrow("exit 2");
+      expect(() => parseFlags(["--effort"])).toThrow("exit 2");
+      expect(err.join("")).toContain("--effort must be one of low, medium, high, xhigh, max");
+    } finally {
+      exit.mockRestore();
+      write.mockRestore();
+    }
   });
 });

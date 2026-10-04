@@ -3,7 +3,8 @@
  *
  * commands.ts — the slash commands, the set every agent CLI has (his order,
  * 2026-09-21: "mirror how the other CLIs work"): /help /clear /compact /config
- * /cost /exit /login /logout /mcp /model /permissions /status /theme /version.
+ * /cost /effort /exit /login /logout /mcp /model /permissions /status /theme
+ * /version.
  * Each is a small, testable function over a CommandCtx the App supplies. The
  * list doubles as the autocomplete menu that opens when a line starts with "/".
  */
@@ -17,7 +18,7 @@ import { readPrefs } from "./prefs.js";
 import { remoteControlState } from "./remote-control.js";
 import { agoLabel, listGlyphhChats, touchedAt } from "./sessions.js";
 import { THEMES, DEFAULT_THEME } from "./theme.js";
-import { PERMISSION_LABEL, PERMISSION_MODES, permissionModeOf, type PermissionMode } from "./types.js";
+import { EFFORTS, EFFORT_DETAIL, EFFORT_LABEL, PERMISSION_LABEL, PERMISSION_MODES, effortOf, permissionModeOf, type Effort, type PermissionMode } from "./types.js";
 import type { PickerSpec } from "./components/Picker.js";
 
 /** What the session has spent so far — /cost reads it. */
@@ -39,6 +40,8 @@ export interface CommandCtx {
   /** The model turns run on; null = the org's default, resolved per turn. */
   model: string | null;
   permission: PermissionMode;
+  /** The effort dial the next turn runs at. */
+  effort: Effort;
   /** This conversation's id (the loop keeps its messages under it). */
   chatId: string;
   cost: SessionCost;
@@ -46,6 +49,8 @@ export interface CommandCtx {
   /** Pick the model: persisted on this device, or for THIS session only. */
   setModel: (id: string | null, opts?: { session?: boolean }) => void;
   setPermission: (mode: PermissionMode) => void;
+  /** Set the effort dial: persisted on this device, or for THIS session only. */
+  setEffort: (effort: Effort, opts?: { session?: boolean }) => void;
   /** Apply + persist a theme by name (repaints the whole tree). */
   setTheme: (name: string) => void;
   clearChat: () => void;
@@ -99,6 +104,15 @@ export function permissionLines(current: PermissionMode): string[] {
   ];
 }
 
+/** /effort output: every step, the current one marked. */
+export function effortLines(current: Effort): string[] {
+  return [
+    "effort — how hard the model thinks on a turn:",
+    ...EFFORTS.map((e) => `  ${e === current ? "▸" : " "} ${e.padEnd(8)} ${EFFORT_LABEL[e].padEnd(11)} ${EFFORT_DETAIL[e]}`),
+    "set:  /effort <level>",
+  ];
+}
+
 const fmtDuration = (ms: number): string => (ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`);
 
 const COMMANDS: SlashCommand[] = [
@@ -144,6 +158,7 @@ const COMMANDS: SlashCommand[] = [
         `theme        ${p.theme ?? DEFAULT_THEME}          /theme <name>`,
         `permissions  ${ctx.permission}        /permissions <mode>`,
         `model        ${p.model ?? "the org's default"}   /model <id>`,
+        `effort       ${ctx.effort} · ${EFFORT_LABEL[ctx.effort]}   /effort <level>`,
         `server       ${ctx.server.replace(/^https?:\/\//, "")}   GLYPHH_SERVER_URL`,
         "file         ~/.glyphh/config.json",
       ];
@@ -159,6 +174,36 @@ const COMMANDS: SlashCommand[] = [
         `${c.turns} turn${c.turns === 1 ? "" : "s"} · ${c.tokensUp}↑ ${c.tokensDown}↓ tokens · ${fmtDuration(c.durationMs)} working`,
         `session up ${fmtDuration(Date.now() - c.startedAt)} · spend lands in your organization's Usage on the gateway`,
       ];
+    },
+  },
+  {
+    name: "effort",
+    aliases: ["think", "reasoning"],
+    summary: "show or set how hard the model thinks: low, medium, high, xhigh, max",
+    usage: "/effort [level]",
+    run(ctx, args) {
+      const raw = args[0];
+      if (!raw) {
+        ctx.openPicker({
+          title: "Select effort",
+          description: "How hard the model thinks on each turn. Enter makes it this device's default; s uses it for this session only.",
+          options: EFFORTS.map((e) => ({ id: e, label: EFFORT_LABEL[e], detail: `${e} · ${EFFORT_DETAIL[e]}`, current: e === ctx.effort })),
+          secondary: { key: "s", label: "use this session only" },
+          enterLabel: "set as default",
+          onPick: (id, session) => {
+            const effort = effortOf(id);
+            if (!effort) return;
+            ctx.setEffort(effort, { session });
+            ctx.note(`effort → ${EFFORT_LABEL[effort]}${session ? " (this session)" : ""}`);
+          },
+        });
+        return [];
+      }
+      if (raw === "list" || raw === "?") return effortLines(ctx.effort);
+      const effort = effortOf(raw);
+      if (!effort) return [`unknown effort: ${raw} — one of ${EFFORTS.join(", ")}`];
+      ctx.setEffort(effort);
+      return [`effort → ${effort} · ${EFFORT_LABEL[effort]}`];
     },
   },
   {
@@ -327,12 +372,12 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "status",
     aliases: ["whoami"],
-    summary: "account, plan, model, permissions, folder and server",
+    summary: "account, plan, model, effort, permissions, folder and server",
     run(ctx) {
       const a = ctx.account;
       return [
         a ? `signed in as ${a.email} · plan ${planLabel(a.tier)}` : "not signed in · /login",
-        `model ${ctx.model ?? "the org's default"} · permissions ${ctx.permission}`,
+        `model ${ctx.model ?? "the org's default"} · effort ${EFFORT_LABEL[ctx.effort]} · permissions ${ctx.permission}`,
         `folder ${ctx.cwd}`,
         `remote control ${remoteControlState().on ? "on" : "off"}`,
         `server ${ctx.server.replace(/^https?:\/\//, "")} · glyphh ${ctx.version}`,
@@ -376,6 +421,7 @@ export const RELEASE_NOTES: string[] = [
   "The Glyphh loop runs in your terminal, on any gateway model",
   "Conversations are shared with the desktop: /resume picks one up",
   "/model, /permissions and /theme open selectors; ↑ recalls prompts",
+  "/effort or --effort sets how hard the model thinks, low → ultra; its thinking shows as it works",
 ];
 
 /** The left panel's tips (shown until the first turn). */

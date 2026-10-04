@@ -1,8 +1,11 @@
 /**
  * @license Proprietary — © Glyphh. All rights reserved.
  *
- * types.ts — the TUI's own shapes: a turn, a transcript item, the permission chip.
+ * types.ts — the TUI's own shapes: a turn, a transcript item, the permission
+ * chip, the effort dial.
  */
+
+import type { LoopEffort } from "@glyphh/sdk/loop";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
 
@@ -63,3 +66,37 @@ export const PERMISSION_LABEL: Record<PermissionMode, string> = {
   plan: "plan · read-only",
   bypass: "bypass permissions · runs everything",
 };
+
+/** THE EFFORT DIAL — how hard the model thinks on a turn (his order,
+ *  2026-10-04). The loop's own vocabulary (`LoopEffort`), five steps; the TUI
+ *  names them low → ultra. Rides every turn as `reasoning_effort`. */
+export type Effort = LoopEffort;
+export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+export const DEFAULT_EFFORT: Effort = "medium";
+
+/** The dial's labels, as the footer, the picker and /effort print them. */
+export const EFFORT_LABEL: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Ultra",
+};
+
+/** What each step buys — the picker's detail column. */
+export const EFFORT_DETAIL: Record<Effort, string> = {
+  low: "quick answers, little thinking",
+  medium: "the balance — the default",
+  high: "thinks longer on hard turns",
+  xhigh: "deep thinking, slower turns",
+  max: "everything the model has",
+};
+
+/** The flag's / command's word → the dial's step (case-insensitive; the labels count too). */
+export function effortOf(raw: string | undefined): Effort | undefined {
+  const w = (raw ?? "").trim().toLowerCase();
+  if (!w) return undefined;
+  const direct = EFFORTS.find((e) => e === w);
+  if (direct) return direct;
+  return EFFORTS.find((e) => EFFORT_LABEL[e].toLowerCase() === w || EFFORT_LABEL[e].replace(/\s+/g, "-").toLowerCase() === w);
+}

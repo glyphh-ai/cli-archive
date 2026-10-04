@@ -2,7 +2,7 @@
  * @license Proprietary — © Glyphh. All rights reserved.
  *
  * Footer.tsx — the bottom line: the permission chip far left (the words every
- * agent CLI uses), the model the next turn runs on far right.
+ * agent CLI uses), the model the next turn runs on and its effort far right.
  */
 
 import React from "react";
@@ -23,6 +23,8 @@ export interface FooterProps {
   loop: string;
   /** The model slots (empty while loading/offline). */
   slots: FooterSlot[];
+  /** The effort dial's label ("Medium"), shown beside the model. */
+  effort?: string;
 }
 
 /** The chip, worded like the other CLIs' status lines. */
@@ -44,7 +46,7 @@ function Slot({ slot, solo }: { slot: FooterSlot; solo: boolean }): React.ReactE
   );
 }
 
-export function Footer({ width, permissionMode, loop, slots }: FooterProps): React.ReactElement {
+export function Footer({ width, permissionMode, loop, slots, effort }: FooterProps): React.ReactElement {
   const solo = slots.length === 1;
   const mode = MODE_GLYPH[permissionMode];
   // The model and loop on the right never clip: the chip's hint gives way
@@ -68,6 +70,13 @@ export function Footer({ width, permissionMode, loop, slots }: FooterProps): Rea
             </React.Fragment>
           ))
         )}
+        {effort ? (
+          <Text>
+            <Text color={theme.faint}> · </Text>
+            <Text color={theme.muted}>effort </Text>
+            <Text color={theme.accent}>{effort}</Text>
+          </Text>
+        ) : null}
         <Text color={theme.faint}>{"   ·   "}</Text>
         <Text color={theme.muted}>loop </Text>
         <Text color={theme.accent}>{loop}</Text>

@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
 import { InputBar } from "../src/components/InputBar.js";
 import { Footer } from "../src/components/Footer.js";
-import { SubFooter } from "../src/components/SubFooter.js";
+import { SubFooter, thinkingLine } from "../src/components/SubFooter.js";
 import { TranscriptLine } from "../src/components/TranscriptLine.js";
 import { ThemePicker } from "../src/components/ThemePicker.js";
 import { theme, applyTheme, themeByName, THEMES, DEFAULT_THEME } from "../src/theme.js";
@@ -21,7 +21,9 @@ import { toolLabel, connectionAuthHint, deleteWordBefore, approvalSpec } from ".
 import { LOGO_MARK, LOGO_NARROW, logoRows } from "../src/banner.js";
 import { Picker } from "../src/components/Picker.js";
 import { SlashMenu } from "../src/components/SlashMenu.js";
-import { matchCommands, permissionLines } from "../src/commands.js";
+import { matchCommands, permissionLines, effortLines, runSlash, type CommandCtx } from "../src/commands.js";
+import type { PickerSpec } from "../src/components/Picker.js";
+import type { Effort } from "../src/types.js";
 import { answerLines, commandLines, headerLines, sectionLines, userLines } from "../src/lines.js";
 import type { ChatTurn, TurnStep } from "../src/types.js";
 
@@ -135,6 +137,14 @@ describe("TUI layout", () => {
     expect(permissionLines("plan").join("\n")).toContain("▸ plan");
   });
 
+  it("footer shows the effort dial beside the model", () => {
+    const frame = render(
+      <Footer width={100} permissionMode="default" loop="glyphh" slots={[{ label: "model", model: "claude-sonnet-5" }]} effort="Extra high" />,
+    ).lastFrame()!;
+    expect(frame).toContain("claude-sonnet-5 · effort Extra high");
+    expect(frame.indexOf("effort Extra high")).toBeLessThan(frame.indexOf("loop glyphh"));
+  });
+
   it("footer labels each slot when a loop declares more than one", () => {
     const { lastFrame } = render(
       <Footer
@@ -211,12 +221,74 @@ describe("status strip", () => {
     expect(frame).toContain("120↑ 480↓ tok");
   });
 
+  it("a working turn shows the model's thinking as one dim line, folded and clipped", () => {
+    const last: ChatTurn = { id: "t1", text: "", status: "running", tokensUp: 0, tokensDown: 0 };
+    const frame = render(
+      <SubFooter width={60} busy elapsed={1.2} last={last} verb={{ ing: "Brewing", past: "Brewed" }} thinking={"The user wants\n  a refactor; first\tI read the module"} />,
+    ).lastFrame()!;
+    expect(frame).toContain("Brewing…");
+    expect(frame).toContain("Thinking… The user wants a refactor; first I read the mod");
+    expect(frame.split("\n").filter((l) => l.includes("Thinking…"))).toHaveLength(1);
+    expect(thinkingLine("short", 40)).toBe("Thinking… short");
+    expect(thinkingLine("x".repeat(100), 30)).toBe(`Thinking… ${"x".repeat(17)}…`);
+    // No thought, no line.
+    const quiet = render(<SubFooter width={60} busy elapsed={0.1} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />).lastFrame()!;
+    expect(quiet).not.toContain("Thinking…");
+  });
+
   it("a stopped turn says so", () => {
     const last: ChatTurn = { id: "t1", text: "", status: "stopped", durationMs: 100, tokensUp: 0, tokensDown: 0 };
     const frame = render(
       <SubFooter width={100} busy={false} elapsed={0} last={last} verb={{ ing: "Brewing", past: "Brewed" }} />,
     ).lastFrame()!;
     expect(frame).toContain("stopped");
+  });
+});
+
+describe("/effort", () => {
+  function ctx(effort: Effort): CommandCtx & { picks: PickerSpec[]; set: Array<[Effort, boolean]>; notes: string[] } {
+    const c = {
+      picks: [] as PickerSpec[], set: [] as Array<[Effort, boolean]>, notes: [] as string[],
+      effort,
+      model: null, permission: "default" as const, chatId: "c1", version: "1.4.10", server: "https://api.glyphh.ai", cwd: "/w", account: null, sessionsFile: null,
+      cost: { turns: 0, tokensUp: 0, tokensDown: 0, durationMs: 0, startedAt: 0 },
+      setEffort: (e: Effort, o?: { session?: boolean }) => { c.set.push([e, !!o?.session]); },
+      openPicker: (spec: PickerSpec) => { c.picks.push(spec); },
+      note: (t: string) => { c.notes.push(t); },
+      emit: () => undefined, setAccount: () => undefined, setModel: () => undefined, setPermission: () => undefined, setTheme: () => undefined,
+      clearChat: () => undefined, quit: () => undefined, resumeChat: async () => [], setRemoteControl: async () => "",
+      client: {} as never,
+    };
+    return c;
+  }
+
+  it("with no argument opens a selector like /model: five levels, labelled, the current one ticked, s for the session", async () => {
+    const c = ctx("medium");
+    expect(await runSlash(c, "/effort")).toEqual([]);
+    const spec = c.picks[0]!;
+    expect(spec.title).toBe("Select effort");
+    expect(spec.options.map((o) => o.label)).toEqual(["Low", "Medium", "High", "Extra high", "Ultra"]);
+    expect(spec.options.map((o) => o.id)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(spec.options.find((o) => o.current)?.id).toBe("medium");
+    expect(spec.secondary).toEqual({ key: "s", label: "use this session only" });
+    spec.onPick("max", false);
+    spec.onPick("high", true);
+    expect(c.set).toEqual([["max", false], ["high", true]]);
+    expect(c.notes).toEqual(["effort → Ultra", "effort → High (this session)"]);
+    const frame = render(<Picker width={80} spec={spec} selected={3} />).lastFrame()!;
+    expect(frame).toContain("Medium ✔");
+    expect(frame).toContain("❯  4. Extra high");
+  });
+
+  it("/effort <level> sets it by word or label; a bad word lists the dial", async () => {
+    const c = ctx("medium");
+    expect(await runSlash(c, "/effort high")).toEqual(["effort → high · High"]);
+    expect(await runSlash(c, "/effort ultra")).toEqual(["effort → max · Ultra"]);
+    expect(c.set).toEqual([["high", false], ["max", false]]);
+    expect(await runSlash(c, "/effort extreme")).toEqual(["unknown effort: extreme — one of low, medium, high, xhigh, max"]);
+    expect(effortLines("high").join("\n")).toContain("▸ high     High");
+    expect(await runSlash(c, "/status")).toEqual(expect.arrayContaining([expect.stringContaining("effort Medium")]));
+    expect(matchCommands("eff").map((x) => x.name)).toEqual(["effort"]);
   });
 });
 

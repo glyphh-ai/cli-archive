@@ -29,6 +29,7 @@ import type { Client } from "@glyphh/sdk";
 import { runLoopTurn, type ApprovalRequest } from "../loop.js";
 import { defaultModel } from "../models.js";
 import { readPrefs, writePrefs, rememberPrompt, folderTrusted, trustFolder } from "../prefs.js";
+import { DEFAULT_EFFORT, EFFORT_LABEL, type Effort } from "../types.js";
 import { LOGO_MARK } from "../banner.js";
 import { diag } from "../diag.js";
 import { InputBar } from "./InputBar.js";
@@ -65,6 +66,8 @@ const VERBS: Array<{ ing: string; past: string }> = [
 
 /** Most recent turns handed to the loop as its seed — bounds the wire, not the transcript. */
 const HISTORY_CAP = 40;
+/** How much of a thought the strip keeps — one line's worth, never a transcript. */
+const THINKING_PREVIEW_MAX = 400;
 
 /** A second ctrl+c within this window quits. */
 const QUIT_WINDOW_MS = 2000;
@@ -134,6 +137,8 @@ export interface AppProps {
   onRelogin?: () => void;
   /** `--model`: the gateway model this session runs on (a session pick, not persisted). */
   initialModel?: string;
+  /** `--effort`: the dial for this launch (a session pick, not persisted). */
+  initialEffort?: Effort;
   /** `--permission`: the chip to start on, for this launch. */
   initialMode?: PermissionMode;
   /** An opening prompt from the command line — sent once, on mount. */
@@ -155,7 +160,7 @@ const LAUNCHED_BY_DESKTOP = !!process.env.GLYPHH_APP_SESSIONS;
  *  ran `cd "~"`, which no shell expands (his report, 2026-09-21). */
 const REAL_CWD = process.cwd();
 
-export function App({ client, version, server, cwd, initialAccount, onRelogin, initialModel, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: AppProps): React.ReactElement {
+export function App({ client, version, server, cwd, initialAccount, onRelogin, initialModel, initialEffort, initialMode, initialPrompt, resumeId, continueLast, trusted, remoteControl }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
 
@@ -180,6 +185,12 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
   const [pickedModel, setPickedModel] = useState<string | null>(() => readPrefs().model ?? null);
   const [sessionModel, setSessionModel] = useState<string | null>(initialModel ?? null);
   const [orgDefault, setOrgDefault] = useState<string | null>(null);
+  // THE EFFORT DIAL, the same two layers: the device's persisted pick (/effort)
+  // and a session pick (--effort, s in the selector) over it; medium underneath.
+  const [pickedEffort, setPickedEffort] = useState<Effort | null>(() => readPrefs().effort ?? null);
+  const [sessionEffort, setSessionEffort] = useState<Effort | null>(initialEffort ?? null);
+  /** The model's thinking while a turn works: null = none yet (or the answer started). */
+  const [thinking, setThinking] = useState<string | null>(null);
   /** The composer's transient hint (ctrl+c once). */
   const [hint, setHint] = useState<string | null>(null);
   /** Slash menu selection while the line starts with "/". */
@@ -207,6 +218,8 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
   modeRef.current = mode;
   const modelRef = useRef<{ picked: string | null; session: string | null }>({ picked: pickedModel, session: sessionModel });
   modelRef.current = { picked: pickedModel, session: sessionModel };
+  const effortRef = useRef<Effort>(sessionEffort ?? pickedEffort ?? DEFAULT_EFFORT);
+  effortRef.current = sessionEffort ?? pickedEffort ?? DEFAULT_EFFORT;
   const cost = useRef<SessionCost>({ turns: 0, tokensUp: 0, tokensDown: 0, durationMs: 0, startedAt: Date.now() });
   const lastCtrlC = useRef(0);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -305,6 +318,16 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
     setSessionModel(null);
     setPickedModel(id);
     writePrefs({ model: id ?? null });
+  }, []);
+
+  const setEffort = useCallback((effort: Effort, opts: { session?: boolean } = {}) => {
+    if (opts.session) {
+      setSessionEffort(effort);
+      return;
+    }
+    setSessionEffort(null);
+    setPickedEffort(effort);
+    writePrefs({ effort });
   }, []);
 
   const setPermission = useCallback((next: PermissionMode) => {
@@ -410,11 +433,24 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
           // Deltas paint in BATCHES (~25 fps): a frame per token is a redraw per token.
           let pendingDelta = "";
           let flushTimer: ReturnType<typeof setTimeout> | null = null;
+          // THINKING: one dim line in the strip, grown from the deltas (batched
+          // like the answer), gone the moment the answer or a tool starts.
+          let thought = "";
+          let thinkTimer: ReturnType<typeof setTimeout> | null = null;
+          const flushThinking = (): void => {
+            thinkTimer = null;
+            if (thought) setThinking(thought);
+          };
+          const endThinking = (): void => {
+            if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+            if (thought) { thought = ""; setThinking(null); }
+          };
           const flushDelta = (): void => {
             flushTimer = null;
             const t = pendingDelta;
             pendingDelta = "";
             if (!t) return;
+            endThinking();
             if (!segId) {
               segText = t.replace(/^\s+/, "");
               if (!segText) return;
@@ -431,8 +467,15 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
               pendingDelta += t;
               if (!flushTimer) flushTimer = setTimeout(flushDelta, 40);
             },
+            thinking: (t: string) => {
+              if (segId || pendingDelta) return; // the answer has begun — the thought is over
+              thought += t;
+              if (thought.length > THINKING_PREVIEW_MAX) thought = thought.slice(0, THINKING_PREVIEW_MAX);
+              if (!thinkTimer) thinkTimer = setTimeout(flushThinking, 80);
+            },
             toolStart: (name: string, title?: string) => {
               if (flushTimer) { clearTimeout(flushTimer); flushDelta(); }
+              endThinking();
               segId = null;
               const id = push({ kind: "section", step: { label: toolLabel(name, title), ok: true, details: [] } });
               const queue = toolItems.get(name) ?? [];
@@ -471,10 +514,12 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
               prompt,
               cwd: process.cwd(),
               permission: modeRef.current,
+              effort: effortRef.current,
               signal: abort.signal,
             },
             {
               onDelta: sink.delta,
+              onThinking: sink.thinking,
               onToolStart: sink.toolStart,
               onToolDone: sink.toolDone,
               onProgress: sink.progress,
@@ -494,6 +539,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
             },
           );
           if (flushTimer) { clearTimeout(flushTimer); flushDelta(); }
+          endThinking();
           text = result.text || text;
           turn.text = text;
           const stopped = result.stopped || abort.signal.aborted;
@@ -538,6 +584,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
       } finally {
         turnAbort.current = null;
         setPending(null); // a parked approval dies with its run
+        setThinking(null);
         setBusy(false);
       }
     },
@@ -559,11 +606,13 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
         cwd,
         model: sessionModel ?? pickedModel,
         permission: mode,
+        effort: sessionEffort ?? pickedEffort ?? DEFAULT_EFFORT,
         chatId: chatRef.current.id,
         cost: cost.current,
         setAccount,
         setModel,
         setPermission,
+        setEffort,
         setTheme,
         clearChat: () => {
           history.current = [];
@@ -587,7 +636,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
       const result = await runSlash(ctx, line);
       patchItem(id, (it) => ({ ...it, result }) as Item);
     },
-    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setTheme, version, onRelogin, sessionModel, pickedModel, openPicker, sessionsFile, resumeChat, setRemoteControl],
+    [account, client, cwd, exit, mode, patchItem, push, server, setModel, setPermission, setEffort, setTheme, version, onRelogin, sessionModel, pickedModel, sessionEffort, pickedEffort, openPicker, sessionsFile, resumeChat, setRemoteControl],
   );
 
   const submit = useCallback(() => {
@@ -767,6 +816,7 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
   });
 
   const slots: FooterSlot[] = [{ label: "model", model: effectiveModel }];
+  const effortLabel = EFFORT_LABEL[sessionEffort ?? pickedEffort ?? DEFAULT_EFFORT];
 
   return (
     <Box flexDirection="column" width={cols} height={frameH}>
@@ -779,11 +829,11 @@ export function App({ client, version, server, cwd, initialAccount, onRelogin, i
       ) : null}
       {/* THE STRIP, pinned to the bottom. */}
       <Box flexDirection="column" flexShrink={0} ref={stripBox}>
-        <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} />
+        <SubFooter width={cols} busy={busy} elapsed={elapsed} last={last} verb={verb} {...(thinking !== null ? { thinking } : {})} />
         {pending ? <Picker width={cols} spec={pending.spec} selected={pending.selected} /> : null}
         {slashOpen ? <SlashMenu width={cols} items={slashItems} selected={slashSelected} /> : null}
         <InputBar width={cols} value={input} cursor={cursor} busy={busy} {...(hint ? { hint } : {})} />
-        <Footer width={cols} permissionMode={mode} loop="glyphh" slots={slots} />
+        <Footer width={cols} permissionMode={mode} loop="glyphh" slots={slots} effort={effortLabel} />
       </Box>
     </Box>
   );

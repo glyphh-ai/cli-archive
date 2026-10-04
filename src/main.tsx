@@ -8,6 +8,7 @@
  *
  *   glyphh [prompt…]                 an opening prompt (sent once signed in)
  *   --model <id>                     the gateway model this session runs on
+ *   --effort low|medium|high|xhigh|max   how hard the model thinks this session
  *   --permission default|acceptEdits|plan|bypass   the permission chip
  *   --resume <chatId> | --continue   open a conversation from the shared store
  *   remote-control                   start with remote control on for this folder
@@ -87,6 +88,7 @@ function main(): void {
       cwd={displayCwd()}
       authLost={authLost}
       {...(flags.model ? { initialModel: flags.model } : {})}
+      {...(flags.effort ? { initialEffort: flags.effort } : {})}
       {...(flags.permission ? { initialMode: flags.permission } : {})}
       {...(flags.prompt ? { initialPrompt: flags.prompt } : {})}
       {...(flags.resume ? { resumeId: flags.resume } : {})}
