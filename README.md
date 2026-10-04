@@ -20,7 +20,7 @@ your terminal on any model your organization serves on the gateway. A thin view 
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ › now wire it into the CLI▍                                       Send ⏎    │
 └───────────────────────────────────────────────────────────────────────────┘
- ◈ default  (shift+tab to cycle)                        claude-sonnet-5
+ ◈ default  (shift+tab to cycle)        claude-sonnet-5 · effort Medium   ·   loop glyphh
 ```
 
 ## Install
@@ -38,7 +38,10 @@ glyphh
   calls (files, shell, connected apps) land as collapsible receipts (ctrl+o), and the
   turn closes with a `* Verbed for Ns · tokens` meta line.
 - **Composer** — the input with a **Send** button pinned right.
-- **Footer** — permission mode (bottom-left), the model the next turn runs on (bottom-right).
+- **Status line** — the spinner and verb while a turn works; beneath it the model's thinking as
+  one dim line (`Thinking… …`) until the answer starts.
+- **Footer** — permission mode (bottom-left); the model the next turn runs on and its effort
+  (bottom-right).
 
 ## Run
 
@@ -58,11 +61,20 @@ permission mode · **Esc** stop the turn · **ctrl+o** expand tool output · **P
 Permission modes are the standard four: `default` (asks before edits and commands),
 `acceptEdits`, `plan` (read-only) and `bypass`. shift+tab cycles the first three.
 
-Commands (type `/` for the menu): `/help` `/clear` `/compact` `/config` `/cost` `/exit` `/login`
-`/logout` `/mcp` `/model` `/permissions` `/status` `/theme` `/version`.
+Effort — how hard the model thinks on a turn — is a five-step dial: `low` Low, `medium` Medium
+(the default), `high` High, `xhigh` Extra high, `max` Ultra. `/effort` opens a selector like
+`/model` (Enter sets this device's default, `s` this session only); `/effort high` sets it
+outright. The pick lives in `~/.glyphh/config.json` beside the model, so it survives restarts;
+`--effort <level>` overrides it for one run.
 
-Flags: `glyphh [--model <id>] [--permission default|acceptEdits|plan|bypass] [--bridge] [prompt…]` —
-what the desktop passes when it opens the Glyphh loop in a terminal card.
+Commands (type `/` for the menu): `/help` `/clear` `/compact` `/config` `/cost` `/effort` `/exit`
+`/login` `/logout` `/mcp` `/model` `/permissions` `/remote-control` `/resume` `/status` `/theme`
+`/version`.
+
+Flags: `glyphh [remote-control] [--model <id>] [--permission default|acceptEdits|plan|bypass]
+[--effort low|medium|high|xhigh|max] [--resume <chatId> | --continue] [--trust] [prompt…]` —
+what the desktop passes when it opens the Glyphh loop in a terminal card. A bad `--effort`
+exits 2 with the allowed list.
 
 Env: `GLYPHH_SERVER_URL`, `GLYPHH_HOME`; `GLYPHH_APP_MCP_URL` + `GLYPHH_APP_MCP_TOKEN` lend the
 desktop's own glyphh_* tools to the loop (the desktop sets them).
