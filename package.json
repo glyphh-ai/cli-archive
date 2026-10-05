@@ -1,6 +1,6 @@
 {
   "name": "@glyphh-ai/cli",
-  "version": "1.4.10",
+  "version": "1.5.0",
   "description": "Glyphh \u2014 the full-screen agent TUI. The desktop coding agent, in your terminal.",
   "license": "LicenseRef-Proprietary",
   "type": "module",
