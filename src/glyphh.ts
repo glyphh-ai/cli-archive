@@ -75,12 +75,34 @@ export class SharedSessionStore implements TokenStore {
   }
 }
 
+/** A TOKEN HANDED IN THE ENVIRONMENT (his report, 2026-10-07: the CLI opened
+ *  from the web asked for a device code): a cloud worker sets GLYPHH_TOKEN to
+ *  the member's key (rrotor cli-env.ts), the platform's API takes it as the
+ *  member, and this store serves it as the session — never written, never
+ *  refreshed, never cleared. Absent, the machine's session file rules. */
+export class EnvTokenStore implements TokenStore {
+  constructor(private readonly token: string) {}
+  async load(): Promise<StoredSession | null> {
+    return { accessToken: this.token, refreshToken: "", expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 };
+  }
+  async save(): Promise<void> { /* the environment's token is not ours to rewrite */ }
+  async clear(): Promise<void> { /* nor to drop */ }
+}
+
+/** The store the CLI signs in with: the environment's token when one is set,
+ *  else the machine's session file. */
+export function tokenStoreFor(env: NodeJS.ProcessEnv = process.env): TokenStore {
+  const token = (env.GLYPHH_TOKEN ?? "").trim();
+  if (token) return new EnvTokenStore(token);
+  return new SharedSessionStore(sessionFileOf(glyphhHome(), serverUrl()), join(glyphhHome(), "session.json"));
+}
+
 /** A client on the machine's session. `onSignedOut` fires when the refresh
  *  chain dies (expired/revoked) — the TUI drops to the login gate. */
 export function makeClient(opts: { onSignedOut?: () => void } = {}): Client {
   return createClient({
     url: serverUrl(),
-    tokenStore: new SharedSessionStore(sessionFileOf(glyphhHome(), serverUrl()), join(glyphhHome(), "session.json")),
+    tokenStore: tokenStoreFor(),
     ...(opts.onSignedOut ? { onSignedOut: opts.onSignedOut } : {}),
   });
 }
