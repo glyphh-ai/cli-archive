@@ -7,7 +7,23 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SharedSessionStore, sessionFileOf } from "../src/glyphh.js";
+import { EnvTokenStore, SharedSessionStore, sessionFileOf, tokenStoreFor } from "../src/glyphh.js";
+
+describe("a token in the environment signs the CLI in (his report, 2026-10-07: the web's CLI asked for a device code)", () => {
+  it("GLYPHH_TOKEN is served as the session, unwritten and uncleared; without it the machine's file rules", async () => {
+    const store = tokenStoreFor({ GLYPHH_TOKEN: " sk-member " } as NodeJS.ProcessEnv);
+    expect(store).toBeInstanceOf(EnvTokenStore);
+    const s = await store.load();
+    expect(s?.accessToken).toBe("sk-member");
+    expect(s?.refreshToken).toBe("");
+    expect((s?.expiresAt ?? 0) > Date.now() + 300 * 24 * 60 * 60 * 1000).toBe(true);
+    await store.save({ accessToken: "other", refreshToken: "r", expiresAt: 1 });
+    await store.clear();
+    expect((await store.load())?.accessToken).toBe("sk-member");
+    expect(tokenStoreFor({} as NodeJS.ProcessEnv)).toBeInstanceOf(SharedSessionStore);
+    expect(tokenStoreFor({ GLYPHH_TOKEN: "  " } as NodeJS.ProcessEnv)).toBeInstanceOf(SharedSessionStore);
+  });
+});
 
 const session = (t: string) => ({ accessToken: t, refreshToken: `r-${t}`, expiresAt: 1 }) as unknown as Parameters<SharedSessionStore["save"]>[0];
 
