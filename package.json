@@ -2,7 +2,7 @@
   "name": "@glyphh-ai/cli",
   "version": "1.5.10",
   "description": "Glyphh — the full-screen agent TUI. The desktop coding agent, in your terminal.",
-  "license": "LicenseRef-Proprietary",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "glyphh": "./dist/main.js"

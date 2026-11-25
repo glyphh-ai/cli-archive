@@ -78,3 +78,8 @@ exits 2 with the allowed list.
 
 Env: `GLYPHH_SERVER_URL`, `GLYPHH_HOME`; `GLYPHH_APP_MCP_URL` + `GLYPHH_APP_MCP_TOKEN` lend the
 desktop's own glyphh_* tools to the loop (the desktop sets them).
+
+
+## License
+
+Apache-2.0. See LICENSE and NOTICE. Copyright 2026 Chris Timmerman / Glyphh AI LLC. More about it: https://glyphh.ai/projects/glyphh-cli
